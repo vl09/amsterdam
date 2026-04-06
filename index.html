@@ -33,10 +33,14 @@
       padding: 12px;
       border-radius: 12px;
       box-shadow: 0 2px 12px rgba(0,0,0,0.15);
-      min-width: 240px;
-      max-width: 340px;
+      min-width: 280px;
+      max-width: 380px;
       font-size: 14px;
       line-height: 1.4;
+      max-height: calc(100vh - 24px);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
     }
 
     .info-box h3 {
@@ -44,11 +48,30 @@
       font-size: 15px;
     }
 
+    .field-group {
+      margin-bottom: 10px;
+    }
+
+    .field-group label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .field-group input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      font-size: 14px;
+    }
+
     .controls {
       display: flex;
       gap: 8px;
       flex-wrap: wrap;
-      margin-top: 10px;
+      margin-top: 8px;
       margin-bottom: 10px;
     }
 
@@ -72,17 +95,46 @@
       cursor: not-allowed;
     }
 
+    .status-line {
+      font-size: 12px;
+      color: #4b5563;
+      margin-bottom: 10px;
+    }
+
     #selection-list {
-      margin: 8px 0 0 18px;
-      padding-right: 4px;
-      max-height: 260px;
+      margin: 8px 0 0 0;
+      padding: 0 4px 0 0;
+      list-style: none;
       overflow-y: auto;
       overflow-x: hidden;
+      flex: 1 1 auto;
+      min-height: 0;
     }
 
     #selection-list li {
-      margin-bottom: 4px;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 8px 0;
       word-break: break-word;
+    }
+
+    #selection-list li:last-child {
+      border-bottom: none;
+    }
+
+    .buurt-name {
+      font-weight: 600;
+    }
+
+    .meta {
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 2px;
+    }
+
+    .leaflet-tooltip {
+      font-size: 13px;
+      padding: 4px 8px;
+      border-radius: 8px;
     }
   </style>
 </head>
@@ -91,7 +143,14 @@
 
   <div class="info-box">
     <h3>Selected buurten</h3>
+
+    <div class="field-group">
+      <label for="username-input">Your name</label>
+      <input id="username-input" type="text" placeholder="e.g. Valentijn" />
+    </div>
+
     <div id="selection-count">0 selected</div>
+    <div id="live-status" class="status-line">Connecting…</div>
 
     <div class="controls">
       <button id="import-btn">Import GeoJSON</button>
@@ -116,17 +175,64 @@
     crossorigin=""
   ></script>
 
-  <script>
-    const map = L.map('map').setView([52.3728, 4.8936], 12);
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import {
+      getDatabase,
+      ref,
+      set,
+      remove,
+      onValue,
+      get,
+      child
+    } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-database.js";
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap contributors'
+    // =========================
+    // 1. REPLACE THIS WITH YOUR FIREBASE CONFIG
+    // =========================
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT.firebaseapp.com",
+      databaseURL: "https://YOUR_PROJECT-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "YOUR_PROJECT",
+      storageBucket: "YOUR_PROJECT.firebasestorage.app",
+      messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const selectionRef = ref(db, "maps/amsterdam/selectedBuurten");
+
+    const map = L.map("map").setView([52.3728, 4.8936], 12);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors"
     }).addTo(map);
 
     const selectedIds = new Set();
     const selectedNames = new Map();
     const selectedFeatures = new Map();
+    const selectedMeta = new Map();
     const layerById = new Map();
+    const featureById = new Map();
+
+    let buurtenLoaded = false;
+    let pendingRemoteData = null;
+
+    const usernameInput = document.getElementById("username-input");
+    const selectionCountEl = document.getElementById("selection-count");
+    const selectionListEl = document.getElementById("selection-list");
+    const liveStatusEl = document.getElementById("live-status");
+
+    usernameInput.value = localStorage.getItem("mapUserName") || "";
+    usernameInput.addEventListener("input", () => {
+      localStorage.setItem("mapUserName", usernameInput.value.trim());
+    });
+
+    function getCurrentUserName() {
+      return usernameInput.value.trim() || "Anonymous";
+    }
 
     function getFeatureId(feature) {
       return (
@@ -142,36 +248,41 @@
       return (
         feature.properties?.naam ||
         feature.properties?.name ||
-        'Onbekende buurt'
+        "Onbekende buurt"
       );
+    }
+
+    function formatTimestamp(ts) {
+      if (!ts) return "";
+      return new Date(ts).toLocaleString("nl-NL");
     }
 
     function baseStyle() {
       return {
-        color: '#4b5563',
+        color: "#4b5563",
         weight: 1,
         opacity: 0.9,
-        fillColor: '#94a3b8',
+        fillColor: "#94a3b8",
         fillOpacity: 0.20
       };
     }
 
     function hoverStyle() {
       return {
-        color: '#1f2937',
+        color: "#1f2937",
         weight: 2,
         opacity: 1,
-        fillColor: '#94a3b8',
+        fillColor: "#94a3b8",
         fillOpacity: 0.35
       };
     }
 
     function selectedStyle() {
       return {
-        color: '#b91c1c',
+        color: "#b91c1c",
         weight: 2,
         opacity: 1,
-        fillColor: '#ef4444',
+        fillColor: "#ef4444",
         fillOpacity: 0.55
       };
     }
@@ -181,25 +292,39 @@
     }
 
     function updateButtons(count) {
-      document.getElementById('export-json-btn').disabled = count === 0;
-      document.getElementById('export-names-btn').disabled = count === 0;
-      document.getElementById('clear-btn').disabled = count === 0;
+      document.getElementById("export-json-btn").disabled = count === 0;
+      document.getElementById("export-names-btn").disabled = count === 0;
+      document.getElementById("clear-btn").disabled = count === 0;
     }
 
     function updateSidebar() {
       const entries = Array.from(selectedNames.entries())
-        .map(([id, name]) => ({ id, name }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+        .map(([id, name]) => ({
+          id,
+          name,
+          meta: selectedMeta.get(id) || {}
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name, "nl"));
 
-      document.getElementById('selection-count').textContent = `${entries.length} selected`;
-
-      const ul = document.getElementById('selection-list');
-      ul.innerHTML = '';
+      selectionCountEl.textContent = `${entries.length} selected`;
+      selectionListEl.innerHTML = "";
 
       for (const entry of entries) {
-        const li = document.createElement('li');
-        li.textContent = entry.name;
-        ul.appendChild(li);
+        const li = document.createElement("li");
+
+        const nameDiv = document.createElement("div");
+        nameDiv.className = "buurt-name";
+        nameDiv.textContent = entry.name;
+
+        const metaDiv = document.createElement("div");
+        metaDiv.className = "meta";
+        metaDiv.textContent =
+          `updated by ${entry.meta.updatedBy || "Unknown"}` +
+          (entry.meta.updatedAt ? ` • ${formatTimestamp(entry.meta.updatedAt)}` : "");
+
+        li.appendChild(nameDiv);
+        li.appendChild(metaDiv);
+        selectionListEl.appendChild(li);
       }
 
       updateButtons(entries.length);
@@ -209,7 +334,7 @@
       const blob = new Blob([content], { type: mimeType });
       const url = URL.createObjectURL(blob);
 
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = url;
       a.download = filename;
       document.body.appendChild(a);
@@ -222,171 +347,233 @@
     function exportSelectedGeoJSON() {
       const features = Array.from(selectedFeatures.values());
       const geojson = {
-        type: 'FeatureCollection',
-        features: features
+        type: "FeatureCollection",
+        features
       };
 
       downloadFile(
-        'selected_buurten.geojson',
+        "selected_buurten.geojson",
         JSON.stringify(geojson, null, 2),
-        'application/geo+json'
+        "application/geo+json"
       );
     }
 
     function exportSelectedNames() {
-      const names = Array.from(selectedNames.values()).sort((a, b) => a.localeCompare(b));
+      const names = Array.from(selectedNames.values()).sort((a, b) => a.localeCompare(b, "nl"));
       downloadFile(
-        'selected_buurten.txt',
-        names.join('\n'),
-        'text/plain;charset=utf-8'
+        "selected_buurten.txt",
+        names.join("\n"),
+        "text/plain;charset=utf-8"
       );
     }
 
-    function selectFeature(featureId, featureName, feature) {
-      const layer = layerById.get(featureId);
-      if (!layer) return false;
-
-      selectedIds.add(featureId);
-      selectedNames.set(featureId, featureName);
-      selectedFeatures.set(featureId, JSON.parse(JSON.stringify(feature)));
-      applyStyle(layer, true);
-      return true;
-    }
-
-    function deselectFeature(featureId) {
-      const layer = layerById.get(featureId);
-      if (layer) {
-        applyStyle(layer, false);
+    function clearVisualSelectionsOnly() {
+      for (const id of Array.from(selectedIds)) {
+        const layer = layerById.get(id);
+        if (layer) {
+          applyStyle(layer, false);
+        }
       }
 
-      selectedIds.delete(featureId);
-      selectedNames.delete(featureId);
-      selectedFeatures.delete(featureId);
+      selectedIds.clear();
+      selectedNames.clear();
+      selectedFeatures.clear();
+      selectedMeta.clear();
     }
 
-    function clearAllSelections() {
-      const idsToClear = Array.from(selectedIds);
-      for (const id of idsToClear) {
-        deselectFeature(id);
+    function applyRemoteSelectionData(data) {
+      if (!buurtenLoaded) {
+        pendingRemoteData = data;
+        return;
       }
+
+      clearVisualSelectionsOnly();
+
+      for (const [featureId, value] of Object.entries(data || {})) {
+        const layer = layerById.get(featureId);
+        const feature = featureById.get(featureId);
+        if (!layer || !feature) continue;
+
+        const featureName = getFeatureName(feature);
+
+        selectedIds.add(featureId);
+        selectedNames.set(featureId, featureName);
+        selectedFeatures.set(featureId, JSON.parse(JSON.stringify(feature)));
+        selectedMeta.set(featureId, {
+          updatedBy: value?.updatedBy || "Unknown",
+          updatedAt: value?.updatedAt || null
+        });
+
+        applyStyle(layer, true);
+      }
+
       updateSidebar();
     }
 
-    function importSelectedGeoJSON(file) {
-      const reader = new FileReader();
+    async function toggleFeatureInCloud(featureId) {
+      const itemRef = ref(db, `maps/amsterdam/selectedBuurten/${featureId}`);
 
-      reader.onload = function(event) {
-        try {
-          const geojson = JSON.parse(event.target.result);
-
-          if (!geojson || geojson.type !== 'FeatureCollection' || !Array.isArray(geojson.features)) {
-            throw new Error('Imported file is not a valid GeoJSON FeatureCollection.');
-          }
-
-          let importedCount = 0;
-          let missingCount = 0;
-
-          for (const feature of geojson.features) {
-            const featureId = getFeatureId(feature);
-            const featureName = getFeatureName(feature);
-
-            if (!featureId) {
-              missingCount += 1;
-              continue;
-            }
-
-            const success = selectFeature(featureId, featureName, feature);
-            if (success) {
-              importedCount += 1;
-            } else {
-              missingCount += 1;
-            }
-          }
-
-          updateSidebar();
-
-          if (importedCount === 0 && missingCount > 0) {
-            alert('No buurten from the imported file could be matched to the current map.');
-          } else if (missingCount > 0) {
-            alert(`Imported ${importedCount} buurten. ${missingCount} could not be matched.`);
-          }
-        } catch (error) {
-          console.error('Import failed:', error);
-          alert('Import failed. Please choose a valid exported GeoJSON file.');
-        }
-      };
-
-      reader.readAsText(file);
+      if (selectedIds.has(featureId)) {
+        await remove(itemRef);
+      } else {
+        await set(itemRef, {
+          selected: true,
+          updatedBy: getCurrentUserName(),
+          updatedAt: Date.now()
+        });
+      }
     }
 
-    document.getElementById('import-btn').addEventListener('click', function() {
-      document.getElementById('import-file-input').click();
-    });
+    async function clearAllSelectionsInCloud() {
+      const snapshot = await get(selectionRef);
+      const data = snapshot.val() || {};
 
-    document.getElementById('import-file-input').addEventListener('change', function(event) {
-      const file = event.target.files[0];
-      if (file) {
-        importSelectedGeoJSON(file);
+      const ops = Object.keys(data).map((id) =>
+        remove(ref(db, `maps/amsterdam/selectedBuurten/${id}`))
+      );
+
+      await Promise.all(ops);
+    }
+
+    async function importSelectedGeoJSONToCloud(file) {
+      const text = await file.text();
+      let geojson;
+
+      try {
+        geojson = JSON.parse(text);
+      } catch {
+        throw new Error("Invalid JSON file.");
       }
-      event.target.value = '';
+
+      if (!geojson || geojson.type !== "FeatureCollection" || !Array.isArray(geojson.features)) {
+        throw new Error("Imported file is not a valid GeoJSON FeatureCollection.");
+      }
+
+      const writeOps = [];
+
+      for (const feature of geojson.features) {
+        const featureId = getFeatureId(feature);
+        if (!featureId || !layerById.has(featureId)) continue;
+
+        writeOps.push(
+          set(ref(db, `maps/amsterdam/selectedBuurten/${featureId}`), {
+            selected: true,
+            updatedBy: getCurrentUserName(),
+            updatedAt: Date.now()
+          })
+        );
+      }
+
+      await Promise.all(writeOps);
+    }
+
+    document.getElementById("import-btn").addEventListener("click", () => {
+      document.getElementById("import-file-input").click();
     });
 
-    document.getElementById('export-json-btn').addEventListener('click', exportSelectedGeoJSON);
-    document.getElementById('export-names-btn').addEventListener('click', exportSelectedNames);
-    document.getElementById('clear-btn').addEventListener('click', clearAllSelections);
+    document.getElementById("import-file-input").addEventListener("change", async (event) => {
+      const file = event.target.files[0];
+      event.target.value = "";
 
-    fetch('https://api.data.amsterdam.nl/v1/gebieden/buurten?_format=geojson')
-      .then(response => {
-        if (!response.ok) {
-          throw new Error(`HTTP error ${response.status}`);
+      if (!file) return;
+
+      try {
+        await importSelectedGeoJSONToCloud(file);
+      } catch (error) {
+        console.error("Import failed:", error);
+        alert(error.message || "Import failed.");
+      }
+    });
+
+    document.getElementById("export-json-btn").addEventListener("click", exportSelectedGeoJSON);
+    document.getElementById("export-names-btn").addEventListener("click", exportSelectedNames);
+
+    document.getElementById("clear-btn").addEventListener("click", async () => {
+      try {
+        await clearAllSelectionsInCloud();
+      } catch (error) {
+        console.error("Clear failed:", error);
+        alert("Could not clear shared selections.");
+      }
+    });
+
+    async function loadBuurten() {
+      const response = await fetch("./data/buurten.geojson");
+      if (!response.ok) {
+        throw new Error(`Could not load local GeoJSON: HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      const buurtenLayer = L.geoJSON(data, {
+        style: baseStyle,
+        onEachFeature: (feature, layer) => {
+          const featureId = getFeatureId(feature);
+          const featureName = getFeatureName(feature);
+
+          if (!featureId) return;
+
+          layerById.set(featureId, layer);
+          featureById.set(featureId, feature);
+
+          layer.bindTooltip(featureName, {
+            sticky: true,
+            direction: "top",
+            opacity: 0.95
+          });
+
+          layer.on("mouseover", () => {
+            if (!selectedIds.has(featureId)) {
+              layer.setStyle(hoverStyle());
+            }
+          });
+
+          layer.on("mouseout", () => {
+            applyStyle(layer, selectedIds.has(featureId));
+          });
+
+          layer.on("click", async () => {
+            try {
+              await toggleFeatureInCloud(featureId);
+            } catch (error) {
+              console.error("Toggle failed:", error);
+              alert("Could not update shared selection.");
+            }
+          });
         }
-        return response.json();
-      })
-      .then(data => {
-        const buurtenLayer = L.geoJSON(data, {
-          style: baseStyle,
-          onEachFeature: function(feature, layer) {
-            const featureId = getFeatureId(feature);
-            const featureName = getFeatureName(feature);
+      }).addTo(map);
 
-            layerById.set(featureId, layer);
+      map.fitBounds(buurtenLayer.getBounds());
+      buurtenLoaded = true;
 
-            layer.bindTooltip(featureName, {
-              sticky: true,
-              direction: 'top',
-              opacity: 0.95
-            });
+      if (pendingRemoteData) {
+        applyRemoteSelectionData(pendingRemoteData);
+        pendingRemoteData = null;
+      }
 
-            layer.on('mouseover', function() {
-              if (!selectedIds.has(featureId)) {
-                layer.setStyle(hoverStyle());
-              }
-            });
+      liveStatusEl.textContent = "Connected";
+    }
 
-            layer.on('mouseout', function() {
-              applyStyle(layer, selectedIds.has(featureId));
-            });
+    onValue(
+      selectionRef,
+      (snapshot) => {
+        const data = snapshot.val() || {};
+        applyRemoteSelectionData(data);
+        liveStatusEl.textContent = "Connected";
+      },
+      (error) => {
+        console.error("Realtime listener error:", error);
+        liveStatusEl.textContent = "Connection error";
+      }
+    );
 
-            layer.on('click', function() {
-              if (selectedIds.has(featureId)) {
-                deselectFeature(featureId);
-              } else {
-                selectFeature(featureId, featureName, feature);
-              }
-              updateSidebar();
-            });
-          }
-        }).addTo(map);
-
-        map.fitBounds(buurtenLayer.getBounds());
-      })
-      .catch(error => {
-        console.error('Could not load buurten GeoJSON:', error);
-        alert(
-          'Could not load the Amsterdam buurten GeoJSON directly. ' +
-          'If needed, download the GeoJSON first and load it locally instead.'
-        );
-      });
+    loadBuurten().catch((error) => {
+      console.error(error);
+      liveStatusEl.textContent = "Load error";
+      alert(
+        "Could not load ./data/buurten.geojson. Make sure the file exists in your GitHub repo."
+      );
+    });
   </script>
 </body>
 </html>
