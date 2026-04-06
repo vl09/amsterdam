@@ -140,10 +140,6 @@
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
-    map.on('click', function(e) {
-      console.log('[buurten] map container click (background / not stopped by a polygon)', e.latlng);
-    });
-
     const selectedIds = new Set();
     const selectedNames = new Map();
     const selectedFeatures = new Map();
@@ -153,6 +149,9 @@
     let displayName = localStorage.getItem(NAME_STORAGE_KEY) || '';
     let layersReady = false;
     let unsubCollab = null;
+    /** While a write is in flight, snapshots must not undo optimistic UI (commit often hangs or is slow). */
+    const pendingOutgoingAdd = new Set();
+    const pendingOutgoingDelete = new Set();
 
     function getFeatureId(feature) {
       return (
@@ -275,7 +274,6 @@
 
     function ensureDisplayName() {
       if (!displayName) {
-        console.warn('[buurten] No display name — opening name modal (set a name to collaborate)');
         openNameModal(true);
       }
     }
@@ -399,7 +397,6 @@
     function applySelectLocal(featureId, featureName, feature) {
       const layer = layerById.get(featureId);
       if (!layer) {
-        console.warn('[buurten] applySelectLocal: no layer for id', featureId);
         return false;
       }
 
@@ -487,6 +484,9 @@
 
       for (const d of docs) {
         const id = fromFirestoreDocId(d.id);
+        if (pendingOutgoingDelete.has(id)) {
+          continue;
+        }
         const data = d.data() || {};
         let feature;
         try {
@@ -511,7 +511,7 @@
       }
 
       for (const id of Array.from(selectedIds)) {
-        if (!nextIds.has(id)) {
+        if (!nextIds.has(id) && !pendingOutgoingAdd.has(id)) {
           applyDeselectLocal(id);
         }
       }
@@ -639,15 +639,19 @@
       return p;
     }
 
+    function commitWithTimeout(commitPromise, ms) {
+      return Promise.race([
+        commitPromise,
+        new Promise(function(_, reject) {
+          window.setTimeout(function() {
+            reject(new Error('Firestore commit timed out after ' + ms + 'ms'));
+          }, ms);
+        })
+      ]);
+    }
+
     function toggleFirestoreSelection(featureId, featureName, feature) {
-      console.log('[buurten] toggleFirestoreSelection', {
-        featureId,
-        featureName,
-        hasDb: !!db,
-        firestoreActive: firestoreActive
-      });
       if (!db) {
-        console.warn('[buurten] toggleFirestoreSelection: aborted (no db)');
         return;
       }
       ensureDisplayName();
@@ -660,6 +664,8 @@
       if (wasSelected) {
         batch.delete(ref);
         writeMeta(batch, 'removed buurt');
+        pendingOutgoingDelete.add(featureId);
+        applyDeselectLocal(featureId);
       } else {
         const featCopy = JSON.parse(JSON.stringify(feature));
         batch.set(ref, {
@@ -670,16 +676,37 @@
           updatedAt: serverTimestamp()
         });
         writeMeta(batch, 'added buurt');
+        pendingOutgoingAdd.add(featureId);
+        applySelectLocal(featureId, featureName, feature);
+      }
+      persistLocalSelection();
+      updateSidebar();
+
+      function clearPending() {
+        pendingOutgoingAdd.delete(featureId);
+        pendingOutgoingDelete.delete(featureId);
       }
 
-      batch
-        .commit()
+      function revertOptimistic() {
+        if (wasSelected) {
+          applySelectLocal(featureId, featureName, feature);
+        } else {
+          applyDeselectLocal(featureId);
+        }
+        persistLocalSelection();
+        updateSidebar();
+      }
+
+      commitWithTimeout(batch.commit(), 30000)
         .then(function() {
           console.log('[buurten] Firestore commit OK', { docId, action: wasSelected ? 'removed' : 'added' });
+          clearPending();
         })
         .catch(function(e) {
-          console.error('[buurten] Firestore commit failed', e);
-          setSyncLine('Save failed — ' + (e && e.code ? e.code : 'error'));
+          console.error('[buurten] Firestore commit failed or timed out', e);
+          clearPending();
+          revertOptimistic();
+          setSyncLine('Save failed — ' + (e && e.message ? e.message : e && e.code ? e.code : 'error'));
           alert('Could not save to the cloud.\n\n' + firestoreErrorMessage(e));
         });
     }
@@ -884,9 +911,6 @@
         return response.json();
       })
       .then(function(data) {
-        const nFeat = data && data.features ? data.features.length : 0;
-        console.log('[buurten] GeoJSON loaded', { features: nFeat, firestoreActive });
-
         const buurtenLayer = L.geoJSON(data, {
           style: baseStyle,
           onEachFeature: function(feature, layer) {
@@ -915,22 +939,14 @@
               applyStyle(layer, selectedIds.has(featureId));
             });
 
-            layer.on('click', function(ev) {
-              console.log('[buurten] polygon click', {
-                featureId,
-                featureName,
-                firestoreActive,
-                originalEvent: ev && ev.originalEvent ? ev.originalEvent.type : '(none)'
-              });
+            layer.on('click', function() {
               if (firestoreActive) {
                 toggleFirestoreSelection(featureId, featureName, feature);
               } else {
                 if (selectedIds.has(featureId)) {
-                  console.log('[buurten] local mode: deselect', featureId);
                   applyDeselectLocal(featureId);
                 } else {
-                  const ok = applySelectLocal(featureId, featureName, feature);
-                  console.log('[buurten] local mode: select', featureId, ok ? 'ok' : 'failed (no layer)');
+                  applySelectLocal(featureId, featureName, feature);
                 }
                 persistLocalSelection();
                 updateSidebar();
@@ -992,5 +1008,3 @@
 </body>
 <!-- Do not paste another full page below this point. -->
 </html>
-
-
