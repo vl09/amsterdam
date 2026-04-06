@@ -149,7 +149,6 @@
     let displayName = localStorage.getItem(NAME_STORAGE_KEY) || '';
     let layersReady = false;
     let unsubCollab = null;
-    let cloudSyncInProgress = false;
 
     function getFeatureId(feature) {
       return (
@@ -591,7 +590,6 @@
       if (!db || selectedIds.size === 0) {
         return Promise.resolve();
       }
-      cloudSyncInProgress = true;
       const ids = Array.from(selectedIds);
       const who = displayName || 'Anonymous';
       const ts = serverTimestamp();
@@ -630,14 +628,11 @@
         commitChunk(0);
       });
 
-      return p.finally(function() {
-        cloudSyncInProgress = false;
-      });
+      return p;
     }
 
     function toggleFirestoreSelection(featureId, featureName, feature) {
       if (!db) return;
-      if (cloudSyncInProgress) return;
       ensureDisplayName();
 
       const docId = toFirestoreDocId(featureId);
@@ -668,7 +663,6 @@
 
     function upvoteFeature(featureId) {
       if (!db) return;
-      if (cloudSyncInProgress) return;
       const docId = toFirestoreDocId(featureId);
       const ref = doc(db, COLLAB_COLLECTION, docId);
       const batch = writeBatch(db);
@@ -928,6 +922,9 @@
           if (selectedIds.size > 0) {
             setSyncLine('Syncing your selection to the cloud…');
             if (mapEl) mapEl.style.pointerEvents = 'none';
+            const ptrSafety = window.setTimeout(function() {
+              if (mapEl) mapEl.style.removeProperty('pointer-events');
+            }, 120000);
             syncLocalSelectionToFirestore()
               .catch(function(e) {
                 console.error(e);
@@ -935,7 +932,8 @@
                 alert('Could not upload your selection to the cloud.\n\n' + firestoreErrorMessage(e));
               })
               .finally(function() {
-                if (mapEl) mapEl.style.pointerEvents = '';
+                window.clearTimeout(ptrSafety);
+                if (mapEl) mapEl.style.removeProperty('pointer-events');
                 startLiveSync();
               });
           } else {
