@@ -909,7 +909,6 @@
 
         if (firestoreActive) {
           restoreLocalSelection();
-          const mapEl = document.getElementById('map');
 
           function startLiveSync() {
             setSyncLine('Connecting…');
@@ -921,21 +920,21 @@
 
           if (selectedIds.size > 0) {
             setSyncLine('Syncing your selection to the cloud…');
-            if (mapEl) mapEl.style.pointerEvents = 'none';
-            const ptrSafety = window.setTimeout(function() {
-              if (mapEl) mapEl.style.removeProperty('pointer-events');
-            }, 120000);
-            syncLocalSelectionToFirestore()
-              .catch(function(e) {
-                console.error(e);
-                setSyncLine('Could not sync selection — ' + (e && e.code ? e.code : 'error'));
-                alert('Could not upload your selection to the cloud.\n\n' + firestoreErrorMessage(e));
+            const syncPromise = syncLocalSelectionToFirestore();
+            syncPromise.catch(function(e) {
+              console.error(e);
+              setSyncLine('Could not sync selection — ' + (e && e.code ? e.code : 'error'));
+              alert('Could not upload your selection to the cloud.\n\n' + firestoreErrorMessage(e));
+            });
+            /* Do not block the map (pointer-events / wheel zoom). If commit() hangs, still go live after a cap. */
+            Promise.race([
+              syncPromise,
+              new Promise(function(resolve) {
+                window.setTimeout(resolve, 45000);
               })
-              .finally(function() {
-                window.clearTimeout(ptrSafety);
-                if (mapEl) mapEl.style.removeProperty('pointer-events');
-                startLiveSync();
-              });
+            ]).finally(function() {
+              startLiveSync();
+            });
           } else {
             startLiveSync();
           }
@@ -956,3 +955,4 @@
 </body>
 <!-- Do not paste another full page below this point. -->
 </html>
+
