@@ -11,7 +11,7 @@
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="styles.css?v=5" />
 </head>
 <body>
   <div id="map"></div>
@@ -380,27 +380,27 @@
         votesWrap.appendChild(countSpan);
 
         if (firestoreActive) {
-          const downBtn = document.createElement('button');
-          downBtn.type = 'button';
-          downBtn.className = 'vote-btn vote-down' + (entry.my === -1 ? ' vote-active' : '');
-          downBtn.textContent = '\u22121';
-          downBtn.title = 'Downvote (shared, one per name)';
-          downBtn.addEventListener('click', function() {
-            ensureDisplayName();
-            applyVoteToggle(entry.id, 'down');
-          });
-          votesWrap.appendChild(downBtn);
-
           const upBtn = document.createElement('button');
           upBtn.type = 'button';
           upBtn.className = 'vote-btn vote-up' + (entry.my === 1 ? ' vote-active' : '');
           upBtn.textContent = '+1';
-          upBtn.title = 'Upvote (shared, one per name)';
+          upBtn.title = 'Upvote (shared, one per display name)';
           upBtn.addEventListener('click', function() {
             ensureDisplayName();
             applyVoteToggle(entry.id, 'up');
           });
           votesWrap.appendChild(upBtn);
+
+          const downBtn = document.createElement('button');
+          downBtn.type = 'button';
+          downBtn.className = 'vote-btn vote-down' + (entry.my === -1 ? ' vote-active' : '');
+          downBtn.textContent = '\u22121';
+          downBtn.title = 'Downvote (shared, one per display name)';
+          downBtn.addEventListener('click', function() {
+            ensureDisplayName();
+            applyVoteToggle(entry.id, 'down');
+          });
+          votesWrap.appendChild(downBtn);
         }
 
         li.appendChild(votesWrap);
@@ -558,9 +558,11 @@
         const t = talliesFromVoters(voters);
         return { up: t.up, down: t.down, voters };
       }
-      let up = typeof data.upvotes === 'number' ? data.upvotes : 0;
-      let down = typeof data.downvotes === 'number' ? data.downvotes : 0;
-      if (typeof data.votes === 'number' && data.upvotes === undefined && data.downvotes === undefined) {
+      const hasUp = typeof data.upvotes === 'number';
+      const hasDown = typeof data.downvotes === 'number';
+      let up = hasUp ? data.upvotes : 0;
+      let down = hasDown ? data.downvotes : 0;
+      if (typeof data.votes === 'number' && !hasUp && !hasDown) {
         up = data.votes;
       }
       return { up, down, voters };
@@ -811,31 +813,34 @@
       const vkey = voterMapKey(displayName);
       const self = displayName || 'Anonymous';
 
-      runTransaction(db, async function(transaction) {
-        const snap = await transaction.get(ref);
-        if (!snap.exists()) {
-          throw new Error('Select this buurt on the map first so it exists in the cloud.');
-        }
-        const data = snap.data() || {};
-        const voters = normalizeVotersObject(data.voters);
-        const prev =
-          typeof voters[vkey] === 'number' && (voters[vkey] === 1 || voters[vkey] === -1) ? voters[vkey] : 0;
-        const next = computeNextVote(prev, direction);
-        const nextVoters = Object.assign({}, voters);
-        if (next === 0) delete nextVoters[vkey];
-        else nextVoters[vkey] = next;
-        const tallies = talliesFromVoters(nextVoters);
-        transaction.set(
-          ref,
-          {
-            voters: nextVoters,
-            upvotes: tallies.up,
-            downvotes: tallies.down,
-            updatedBy: self,
-            updatedAt: serverTimestamp()
-          },
-          { merge: true }
-        );
+      runTransaction(db, function(transaction) {
+        return transaction.get(ref).then(function(snap) {
+          if (!snap.exists) {
+            throw new Error('Select this buurt on the map first so it exists in the cloud.');
+          }
+          const data = snap.data() || {};
+          const voters = normalizeVotersObject(data.voters);
+          const prev =
+            typeof voters[vkey] === 'number' && (voters[vkey] === 1 || voters[vkey] === -1)
+              ? voters[vkey]
+              : 0;
+          const next = computeNextVote(prev, direction);
+          const nextVoters = Object.assign({}, voters);
+          if (next === 0) delete nextVoters[vkey];
+          else nextVoters[vkey] = next;
+          const tallies = talliesFromVoters(nextVoters);
+          transaction.set(
+            ref,
+            {
+              voters: nextVoters,
+              upvotes: tallies.up,
+              downvotes: tallies.down,
+              updatedBy: self,
+              updatedAt: serverTimestamp()
+            },
+            { merge: true }
+          );
+        });
       })
         .then(function() {
           const batch = writeBatch(db);
