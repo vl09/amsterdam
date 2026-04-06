@@ -78,7 +78,7 @@
       writeBatch,
       getDocs,
       serverTimestamp,
-      increment
+      runTransaction
     } from 'https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js';
 
     void (function bootstrapAmsterdamBuurten() {
@@ -143,7 +143,10 @@
     const selectedIds = new Set();
     const selectedNames = new Map();
     const selectedFeatures = new Map();
-    const voteById = new Map();
+    /** Per buurt: aggregate tallies from all users (live from Firestore). */
+    const voteCountsById = new Map();
+    /** Current user's vote for each selected buurt: 1 | -1 | 0 */
+    const myVoteById = new Map();
     const layerById = new Map();
 
     let displayName = localStorage.getItem(NAME_STORAGE_KEY) || '';
@@ -177,6 +180,40 @@
 
     function fromFirestoreDocId(docId) {
       return decodeURIComponent(docId);
+    }
+
+    function voterMapKey(name) {
+      return encodeURIComponent(String(name || 'Anonymous'));
+    }
+
+    function normalizeVotersObject(raw) {
+      const out = {};
+      if (!raw || typeof raw !== 'object') return out;
+      for (const k of Object.keys(raw)) {
+        const v = raw[k];
+        if (v === 1 || v === -1) out[k] = v;
+      }
+      return out;
+    }
+
+    function talliesFromVoters(voters) {
+      let up = 0;
+      let down = 0;
+      for (const v of Object.values(voters)) {
+        if (v === 1) up += 1;
+        else if (v === -1) down += 1;
+      }
+      return { up, down };
+    }
+
+    /** prev: 1 | -1 | 0; direction: 'up' | 'down' */
+    function computeNextVote(prev, direction) {
+      if (direction === 'up') {
+        if (prev === 1) return 0;
+        return 1;
+      }
+      if (prev === -1) return 0;
+      return -1;
     }
 
     function baseStyle() {
@@ -313,7 +350,11 @@
 
     function updateSidebar() {
       const entries = Array.from(selectedNames.entries())
-        .map(([id, name]) => ({ id, name, votes: voteById.get(id) || 0 }))
+        .map(([id, name]) => {
+          const c = voteCountsById.get(id) || { up: 0, down: 0 };
+          const my = myVoteById.get(id) || 0;
+          return { id, name, up: c.up, down: c.down, my };
+        })
         .sort((a, b) => a.name.localeCompare(b.name));
 
       document.getElementById('selection-count').textContent = `${entries.length} selected`;
@@ -334,20 +375,32 @@
 
         const countSpan = document.createElement('span');
         countSpan.className = 'vote-count';
-        countSpan.textContent = entry.votes > 0 ? String(entry.votes) : '·';
+        countSpan.textContent =
+          entry.up > 0 || entry.down > 0 ? '\u2191' + entry.up + ' \u2193' + entry.down : '\u00b7';
         votesWrap.appendChild(countSpan);
 
         if (firestoreActive) {
-          const up = document.createElement('button');
-          up.type = 'button';
-          up.className = 'vote-btn';
-          up.textContent = '+1';
-          up.title = 'Upvote (shared)';
-          up.addEventListener('click', function() {
+          const downBtn = document.createElement('button');
+          downBtn.type = 'button';
+          downBtn.className = 'vote-btn vote-down' + (entry.my === -1 ? ' vote-active' : '');
+          downBtn.textContent = '\u22121';
+          downBtn.title = 'Downvote (shared, one per name)';
+          downBtn.addEventListener('click', function() {
             ensureDisplayName();
-            upvoteFeature(entry.id);
+            applyVoteToggle(entry.id, 'down');
           });
-          votesWrap.appendChild(up);
+          votesWrap.appendChild(downBtn);
+
+          const upBtn = document.createElement('button');
+          upBtn.type = 'button';
+          upBtn.className = 'vote-btn vote-up' + (entry.my === 1 ? ' vote-active' : '');
+          upBtn.textContent = '+1';
+          upBtn.title = 'Upvote (shared, one per name)';
+          upBtn.addEventListener('click', function() {
+            ensureDisplayName();
+            applyVoteToggle(entry.id, 'up');
+          });
+          votesWrap.appendChild(upBtn);
         }
 
         li.appendChild(votesWrap);
@@ -403,7 +456,8 @@
       selectedIds.add(featureId);
       selectedNames.set(featureId, featureName);
       selectedFeatures.set(featureId, JSON.parse(JSON.stringify(feature)));
-      if (!voteById.has(featureId)) voteById.set(featureId, 0);
+      if (!voteCountsById.has(featureId)) voteCountsById.set(featureId, { up: 0, down: 0 });
+      if (!myVoteById.has(featureId)) myVoteById.set(featureId, 0);
       applyStyle(layer, true);
       return true;
     }
@@ -416,15 +470,19 @@
       selectedIds.delete(featureId);
       selectedNames.delete(featureId);
       selectedFeatures.delete(featureId);
-      voteById.delete(featureId);
+      voteCountsById.delete(featureId);
+      myVoteById.delete(featureId);
     }
 
     function persistLocalSelection() {
       const entries = [];
       for (const id of selectedIds) {
+        const c = voteCountsById.get(id) || { up: 0, down: 0 };
         entries.push({
           id,
-          name: selectedNames.get(id) || ''
+          name: selectedNames.get(id) || '',
+          upvotes: c.up,
+          downvotes: c.down
         });
       }
       try {
@@ -467,20 +525,49 @@
               e.name || getFeatureName(layer.feature),
               layer.feature
             );
-            voteById.set(e.id, typeof e.votes === 'number' ? e.votes : 0);
+            const up =
+              typeof e.upvotes === 'number'
+                ? e.upvotes
+                : typeof e.votes === 'number'
+                  ? e.votes
+                  : 0;
+            const down = typeof e.downvotes === 'number' ? e.downvotes : 0;
+            voteCountsById.set(e.id, { up, down });
+            myVoteById.set(e.id, 0);
           }
         } else if (e.feature) {
           applySelectLocal(e.id, e.name || getFeatureName(e.feature), e.feature);
-          voteById.set(e.id, typeof e.votes === 'number' ? e.votes : 0);
+          const up =
+            typeof e.upvotes === 'number'
+              ? e.upvotes
+              : typeof e.votes === 'number'
+                ? e.votes
+                : 0;
+          const down = typeof e.downvotes === 'number' ? e.downvotes : 0;
+          voteCountsById.set(e.id, { up, down });
+          myVoteById.set(e.id, 0);
         }
       }
       updateSidebar();
       persistLocalSelection();
     }
 
+    function parseVotePayloadFromDoc(data) {
+      const voters = normalizeVotersObject(data.voters);
+      if (Object.keys(voters).length > 0) {
+        const t = talliesFromVoters(voters);
+        return { up: t.up, down: t.down, voters };
+      }
+      let up = typeof data.upvotes === 'number' ? data.upvotes : 0;
+      let down = typeof data.downvotes === 'number' ? data.downvotes : 0;
+      if (typeof data.votes === 'number' && data.upvotes === undefined && data.downvotes === undefined) {
+        up = data.votes;
+      }
+      return { up, down, voters };
+    }
+
     function applySnapshotToMap(docs) {
       const nextIds = new Set();
-      const nextVotes = new Map();
 
       for (const d of docs) {
         const id = fromFirestoreDocId(d.id);
@@ -498,7 +585,11 @@
 
         nextIds.add(id);
         const name = data.name || getFeatureName(feature);
-        nextVotes.set(id, typeof data.votes === 'number' ? data.votes : 0);
+        const voteBlock = parseVotePayloadFromDoc(data);
+        voteCountsById.set(id, { up: voteBlock.up, down: voteBlock.down });
+        const vk = voterMapKey(displayName);
+        const mv = voteBlock.voters[vk];
+        myVoteById.set(id, mv === 1 ? 1 : mv === -1 ? -1 : 0);
 
         if (!selectedIds.has(id)) {
           applySelectLocal(id, name, feature);
@@ -514,10 +605,6 @@
         if (!nextIds.has(id) && !pendingOutgoingAdd.has(id)) {
           applyDeselectLocal(id);
         }
-      }
-
-      for (const id of nextIds) {
-        voteById.set(id, nextVotes.get(id) || 0);
       }
 
       updateSidebar();
@@ -613,13 +700,16 @@
             if (!feature) continue;
             const docId = toFirestoreDocId(id);
             const ref = doc(db, COLLAB_COLLECTION, docId);
-            batch.set(ref, {
-              name: name,
-              featureJson: JSON.stringify(JSON.parse(JSON.stringify(feature))),
-              votes: voteById.get(id) || 0,
-              updatedBy: who,
-              updatedAt: ts
-            });
+            batch.set(
+              ref,
+              {
+                name: name,
+                featureJson: JSON.stringify(JSON.parse(JSON.stringify(feature))),
+                updatedBy: who,
+                updatedAt: ts
+              },
+              { merge: true }
+            );
           }
           writeMeta(batch, 'sync local backup');
           batch
@@ -671,7 +761,9 @@
         batch.set(ref, {
           name: featureName,
           featureJson: JSON.stringify(featCopy),
-          votes: 0,
+          upvotes: 0,
+          downvotes: 0,
+          voters: {},
           updatedBy: displayName || 'Anonymous',
           updatedAt: serverTimestamp()
         });
@@ -711,21 +803,49 @@
         });
     }
 
-    function upvoteFeature(featureId) {
+    function applyVoteToggle(featureId, direction) {
       if (!db) return;
+      ensureDisplayName();
       const docId = toFirestoreDocId(featureId);
       const ref = doc(db, COLLAB_COLLECTION, docId);
-      const batch = writeBatch(db);
-      batch.update(ref, {
-        votes: increment(1),
-        updatedBy: displayName || 'Anonymous',
-        updatedAt: serverTimestamp()
-      });
-      writeMeta(batch, 'upvote');
-      batch.commit().catch(function(e) {
-        console.error(e);
-        alert('Upvote failed.\n\n' + firestoreErrorMessage(e));
-      });
+      const vkey = voterMapKey(displayName);
+      const self = displayName || 'Anonymous';
+
+      runTransaction(db, async function(transaction) {
+        const snap = await transaction.get(ref);
+        if (!snap.exists()) {
+          throw new Error('Select this buurt on the map first so it exists in the cloud.');
+        }
+        const data = snap.data() || {};
+        const voters = normalizeVotersObject(data.voters);
+        const prev =
+          typeof voters[vkey] === 'number' && (voters[vkey] === 1 || voters[vkey] === -1) ? voters[vkey] : 0;
+        const next = computeNextVote(prev, direction);
+        const nextVoters = Object.assign({}, voters);
+        if (next === 0) delete nextVoters[vkey];
+        else nextVoters[vkey] = next;
+        const tallies = talliesFromVoters(nextVoters);
+        transaction.set(
+          ref,
+          {
+            voters: nextVoters,
+            upvotes: tallies.up,
+            downvotes: tallies.down,
+            updatedBy: self,
+            updatedAt: serverTimestamp()
+          },
+          { merge: true }
+        );
+      })
+        .then(function() {
+          const batch = writeBatch(db);
+          writeMeta(batch, direction === 'up' ? 'vote up' : 'vote down');
+          return batch.commit();
+        })
+        .catch(function(e) {
+          console.error(e);
+          alert('Vote failed.\n\n' + firestoreErrorMessage(e));
+        });
     }
 
     function runBatchedDeletes(refs, onDone) {
@@ -813,7 +933,9 @@
                 batch.set(ref, {
                   name: op.featureName,
                   featureJson: JSON.stringify(featCopy),
-                  votes: 0,
+                  upvotes: 0,
+                  downvotes: 0,
+                  voters: {},
                   updatedBy: who,
                   updatedAt: ts
                 });
