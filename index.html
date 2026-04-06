@@ -340,6 +340,1119 @@
     let displayName = localStorage.getItem(NAME_STORAGE_KEY) || '';
     let layersReady = false;
     let unsubCollab = null;
+    let cloudSyncInProgress = false;
+
+    function getFeatureId(feature) {
+      return (
+        feature.properties?.identificatie ||
+        feature.properties?.id ||
+        feature.properties?.code ||
+        feature.properties?.volgnummer ||
+        feature.properties?.naam
+      );
+    }
+
+    function getFeatureName(feature) {
+      return (
+        feature.properties?.naam ||
+        feature.properties?.name ||
+        'Onbekende buurt'
+      );
+    }
+
+    function toFirestoreDocId(featureId) {
+      return encodeURIComponent(String(featureId));
+    }
+
+    function fromFirestoreDocId(docId) {
+      return decodeURIComponent(docId);
+    }
+
+    function baseStyle() {
+      return {
+        color: '#4b5563',
+        weight: 1,
+        opacity: 0.9,
+        fillColor: '#94a3b8',
+        fillOpacity: 0.20
+      };
+    }
+
+    function hoverStyle() {
+      return {
+        color: '#1f2937',
+        weight: 2,
+        opacity: 1,
+        fillColor: '#94a3b8',
+        fillOpacity: 0.35
+      };
+    }
+
+    function selectedStyle() {
+      return {
+        color: '#b91c1c',
+        weight: 2,
+        opacity: 1,
+        fillColor: '#ef4444',
+        fillOpacity: 0.55
+      };
+    }
+
+    function applyStyle(layer, isSelected) {
+      layer.setStyle(isSelected ? selectedStyle() : baseStyle());
+    }
+
+    function formatTime(ts) {
+      if (!ts || typeof ts.toDate !== 'function') return '';
+      try {
+        return ts.toDate().toLocaleString();
+      } catch {
+        return '';
+      }
+    }
+
+    function setSyncLine(text) {
+      document.getElementById('sync-line').textContent = text;
+    }
+
+    function updateDisplayNameUI() {
+      const el = document.getElementById('display-name-label');
+      if (el) {
+        el.textContent = displayName || '(not set)';
+      }
+    }
+
+    function openNameModal(isRequired) {
+      const modal = document.getElementById('name-modal');
+      const input = document.getElementById('name-input');
+      input.value = displayName || '';
+      modal.hidden = false;
+      input.focus();
+      modal.dataset.required = isRequired ? '1' : '0';
+      document.getElementById('name-cancel-btn').style.display = isRequired ? 'none' : 'inline-block';
+    }
+
+    function closeNameModal() {
+      document.getElementById('name-modal').hidden = true;
+    }
+
+    function saveNameFromModal() {
+      const v = document.getElementById('name-input').value.trim() || 'Anonymous';
+      displayName = v;
+      try {
+        localStorage.setItem(NAME_STORAGE_KEY, displayName);
+      } catch (e) {
+        console.warn(e);
+        alert('Could not save your name (browser storage blocked or full).');
+      }
+      updateDisplayNameUI();
+      closeNameModal();
+    }
+
+    document.getElementById('change-name-btn').addEventListener('click', function() {
+      openNameModal(false);
+    });
+
+    document.getElementById('name-save-btn').addEventListener('click', saveNameFromModal);
+
+    document.getElementById('name-cancel-btn').addEventListener('click', closeNameModal);
+
+    document.getElementById('name-input').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') saveNameFromModal();
+    });
+
+    function ensureDisplayName() {
+      if (!displayName) {
+        openNameModal(true);
+      }
+    }
+
+    /** True if we have a non-empty offline backup of selections (used when Firestore is empty and _meta does not exist yet). */
+    function localStorageHasSelectionBackup() {
+      try {
+        const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (!raw) return false;
+        const data = JSON.parse(raw);
+        return Array.isArray(data.entries) && data.entries.length > 0;
+      } catch {
+        return false;
+      }
+    }
+
+    function firestoreErrorMessage(err) {
+      const code = err && err.code ? err.code : '';
+      const msg = err && err.message ? err.message : String(err);
+      if (code === 'permission-denied') {
+        return (
+          'Firestore permission denied. In Firebase Console → Firestore → Rules, allow read/write for buurten_collab, e.g.:\n' +
+          "match /buurten_collab/{d} { allow read, write: if true; }"
+        );
+      }
+      return msg + (code ? ' (' + code + ')' : '');
+    }
+
+    // Show saved name as soon as the script runs (do not wait for GeoJSON).
+    updateDisplayNameUI();
+
+    function updateButtons(count) {
+      document.getElementById('export-json-btn').disabled = count === 0;
+      document.getElementById('export-names-btn').disabled = count === 0;
+      document.getElementById('clear-btn').disabled = count === 0;
+    }
+
+    function updateSidebar() {
+      const entries = Array.from(selectedNames.entries())
+        .map(([id, name]) => ({ id, name, votes: voteById.get(id) || 0 }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
+      document.getElementById('selection-count').textContent = `${entries.length} selected`;
+
+      const ul = document.getElementById('selection-list');
+      ul.innerHTML = '';
+
+      for (const entry of entries) {
+        const li = document.createElement('li');
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'li-name';
+        nameSpan.textContent = entry.name;
+        li.appendChild(nameSpan);
+
+        const votesWrap = document.createElement('div');
+        votesWrap.className = 'li-votes';
+
+        const countSpan = document.createElement('span');
+        countSpan.className = 'vote-count';
+        countSpan.textContent = entry.votes > 0 ? String(entry.votes) : '·';
+        votesWrap.appendChild(countSpan);
+
+        if (firestoreActive) {
+          const up = document.createElement('button');
+          up.type = 'button';
+          up.className = 'vote-btn';
+          up.textContent = '+1';
+          up.title = 'Upvote (shared)';
+          up.addEventListener('click', function() {
+            ensureDisplayName();
+            upvoteFeature(entry.id);
+          });
+          votesWrap.appendChild(up);
+        }
+
+        li.appendChild(votesWrap);
+        ul.appendChild(li);
+      }
+
+      updateButtons(entries.length);
+    }
+
+    function downloadFile(filename, content, mimeType) {
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      URL.revokeObjectURL(url);
+    }
+
+    function exportSelectedGeoJSON() {
+      const features = Array.from(selectedFeatures.values());
+      const geojson = {
+        type: 'FeatureCollection',
+        features: features
+      };
+
+      downloadFile(
+        'selected_buurten.geojson',
+        JSON.stringify(geojson, null, 2),
+        'application/geo+json'
+      );
+    }
+
+    function exportSelectedNames() {
+      const names = Array.from(selectedNames.values()).sort((a, b) => a.localeCompare(b));
+      downloadFile(
+        'selected_buurten.txt',
+        names.join('\n'),
+        'text/plain;charset=utf-8'
+      );
+    }
+
+    function applySelectLocal(featureId, featureName, feature) {
+      const layer = layerById.get(featureId);
+      if (!layer) return false;
+
+      selectedIds.add(featureId);
+      selectedNames.set(featureId, featureName);
+      selectedFeatures.set(featureId, JSON.parse(JSON.stringify(feature)));
+      if (!voteById.has(featureId)) voteById.set(featureId, 0);
+      applyStyle(layer, true);
+      return true;
+    }
+
+    function applyDeselectLocal(featureId) {
+      const layer = layerById.get(featureId);
+      if (layer) {
+        applyStyle(layer, false);
+      }
+      selectedIds.delete(featureId);
+      selectedNames.delete(featureId);
+      selectedFeatures.delete(featureId);
+      voteById.delete(featureId);
+    }
+
+    function persistLocalSelection() {
+      const entries = [];
+      for (const id of selectedIds) {
+        entries.push({
+          id,
+          name: selectedNames.get(id) || ''
+        });
+      }
+      try {
+        localStorage.setItem(
+          LOCAL_STORAGE_KEY,
+          JSON.stringify({ v: 2, entries: entries })
+        );
+      } catch (e) {
+        console.warn('Could not save local selection', e);
+      }
+    }
+
+    function restoreLocalSelection() {
+      let raw;
+      try {
+        raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+      } catch {
+        return;
+      }
+      if (!raw) return;
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      if (!data.entries || !Array.isArray(data.entries)) return;
+
+      const isV2 =
+        data.v === 2 ||
+        (data.entries.length > 0 && !data.entries[0].feature);
+
+      for (const e of data.entries) {
+        if (!e.id) continue;
+        const layer = layerById.get(e.id);
+        if (isV2) {
+          if (layer && layer.feature) {
+            applySelectLocal(
+              e.id,
+              e.name || getFeatureName(layer.feature),
+              layer.feature
+            );
+            voteById.set(e.id, typeof e.votes === 'number' ? e.votes : 0);
+          }
+        } else if (e.feature) {
+          applySelectLocal(e.id, e.name || getFeatureName(e.feature), e.feature);
+          voteById.set(e.id, typeof e.votes === 'number' ? e.votes : 0);
+        }
+      }
+      updateSidebar();
+      persistLocalSelection();
+    }
+
+    function applySnapshotToMap(docs) {
+      const nextIds = new Set();
+      const nextVotes = new Map();
+
+      for (const d of docs) {
+        const id = fromFirestoreDocId(d.id);
+        const data = d.data() || {};
+        let feature;
+        try {
+          feature = data.featureJson ? JSON.parse(data.featureJson) : null;
+        } catch {
+          feature = null;
+        }
+        if (!feature) continue;
+
+        nextIds.add(id);
+        const name = data.name || getFeatureName(feature);
+        nextVotes.set(id, typeof data.votes === 'number' ? data.votes : 0);
+
+        if (!selectedIds.has(id)) {
+          applySelectLocal(id, name, feature);
+        } else {
+          selectedNames.set(id, name);
+          selectedFeatures.set(id, JSON.parse(JSON.stringify(feature)));
+          const layer = layerById.get(id);
+          if (layer) applyStyle(layer, true);
+        }
+      }
+
+      for (const id of Array.from(selectedIds)) {
+        if (!nextIds.has(id)) {
+          applyDeselectLocal(id);
+        }
+      }
+
+      for (const id of nextIds) {
+        voteById.set(id, nextVotes.get(id) || 0);
+      }
+
+      updateSidebar();
+      persistLocalSelection();
+    }
+
+    function subscribeCollaboration() {
+      if (!db) return;
+
+      unsubCollab = onSnapshot(
+        collection(db, COLLAB_COLLECTION),
+        function(snapshot) {
+          const selectionDocs = [];
+          let metaData = null;
+
+          snapshot.forEach(function(docSnap) {
+            if (docSnap.id === META_DOC_ID) {
+              metaData = docSnap.data();
+            } else {
+              selectionDocs.push(docSnap);
+            }
+          });
+
+          if (metaData) {
+            const who = metaData.lastUpdatedBy || 'Someone';
+            const when = formatTime(metaData.lastUpdatedAt);
+            const action = metaData.lastAction ? ` · ${metaData.lastAction}` : '';
+            setSyncLine(
+              when
+                ? `Live sync · Last update by ${who}${action} · ${when}`
+                : `Live sync · Last update by ${who}${action}`
+            );
+          } else {
+            setSyncLine('Live sync · No activity yet');
+          }
+
+          if (layersReady) {
+            if (selectionDocs.length === 0 && !metaData && localStorageHasSelectionBackup()) {
+              restoreLocalSelection();
+              if (firestoreActive && selectedIds.size > 0) {
+                syncLocalSelectionToFirestore().catch(function(e) {
+                  console.error(e);
+                  setSyncLine('Could not sync restored selection — ' + (e && e.code ? e.code : 'error'));
+                  alert('Could not upload restored selection to the cloud.\n\n' + firestoreErrorMessage(e));
+                });
+              }
+            } else {
+              applySnapshotToMap(selectionDocs);
+            }
+          }
+        },
+        function(err) {
+          console.error('Firestore listener error', err);
+          setSyncLine('Sync error — check console / Firebase config');
+        }
+      );
+    }
+
+    function writeMeta(batch, actionLabel) {
+      const ref = doc(db, COLLAB_COLLECTION, META_DOC_ID);
+      batch.set(
+        ref,
+        {
+          lastUpdatedBy: displayName || 'Anonymous',
+          lastUpdatedAt: serverTimestamp(),
+          lastAction: actionLabel
+        },
+        { merge: true }
+      );
+    }
+
+    /**
+     * Push all current in-memory selections to Firestore so the server matches the UI.
+     * Required after restoring from localStorage while Firestore was empty; otherwise the next
+     * snapshot only contains the buurten touched by the first click and wipes the rest.
+     */
+    function syncLocalSelectionToFirestore() {
+      if (!db || selectedIds.size === 0) {
+        return Promise.resolve();
+      }
+      cloudSyncInProgress = true;
+      const ids = Array.from(selectedIds);
+      const who = displayName || 'Anonymous';
+      const ts = serverTimestamp();
+
+      const p = new Promise(function(resolve, reject) {
+        function commitChunk(start) {
+          const batch = writeBatch(db);
+          const end = Math.min(start + 400, ids.length);
+          for (let i = start; i < end; i += 1) {
+            const id = ids[i];
+            const feature = selectedFeatures.get(id);
+            const name = selectedNames.get(id) || '';
+            if (!feature) continue;
+            const docId = toFirestoreDocId(id);
+            const ref = doc(db, COLLAB_COLLECTION, docId);
+            batch.set(ref, {
+              name: name,
+              featureJson: JSON.stringify(JSON.parse(JSON.stringify(feature))),
+              votes: voteById.get(id) || 0,
+              updatedBy: who,
+              updatedAt: ts
+            });
+          }
+          writeMeta(batch, 'sync local backup');
+          batch
+            .commit()
+            .then(function() {
+              if (end < ids.length) {
+                commitChunk(end);
+              } else {
+                resolve();
+              }
+            })
+            .catch(reject);
+        }
+        commitChunk(0);
+      });
+
+      return p.finally(function() {
+        cloudSyncInProgress = false;
+      });
+    }
+
+    function toggleFirestoreSelection(featureId, featureName, feature) {
+      if (!db) return;
+      if (cloudSyncInProgress) return;
+      ensureDisplayName();
+
+      const docId = toFirestoreDocId(featureId);
+      const ref = doc(db, COLLAB_COLLECTION, docId);
+      const batch = writeBatch(db);
+
+      if (selectedIds.has(featureId)) {
+        batch.delete(ref);
+        writeMeta(batch, 'removed buurt');
+      } else {
+        const featCopy = JSON.parse(JSON.stringify(feature));
+        batch.set(ref, {
+          name: featureName,
+          featureJson: JSON.stringify(featCopy),
+          votes: 0,
+          updatedBy: displayName || 'Anonymous',
+          updatedAt: serverTimestamp()
+        });
+        writeMeta(batch, 'added buurt');
+      }
+
+      batch.commit().catch(function(e) {
+        console.error(e);
+        setSyncLine('Save failed — ' + (e && e.code ? e.code : 'error'));
+        alert('Could not save to the cloud.\n\n' + firestoreErrorMessage(e));
+      });
+    }
+
+    function upvoteFeature(featureId) {
+      if (!db) return;
+      if (cloudSyncInProgress) return;
+      const docId = toFirestoreDocId(featureId);
+      const ref = doc(db, COLLAB_COLLECTION, docId);
+      const batch = writeBatch(db);
+      batch.update(ref, {
+        votes: increment(1),
+        updatedBy: displayName || 'Anonymous',
+        updatedAt: serverTimestamp()
+      });
+      writeMeta(batch, 'upvote');
+      batch.commit().catch(function(e) {
+        console.error(e);
+        alert('Upvote failed.\n\n' + firestoreErrorMessage(e));
+      });
+    }
+
+    function runBatchedDeletes(refs, onDone) {
+      if (refs.length === 0) {
+        if (onDone) onDone();
+        return;
+      }
+      const chunk = refs.splice(0, 400);
+      const batch = writeBatch(db);
+      for (const r of chunk) {
+        batch.delete(r);
+      }
+      writeMeta(batch, 'clear');
+      batch
+        .commit()
+        .then(function() {
+          runBatchedDeletes(refs, onDone);
+        })
+        .catch(function(e) {
+          console.error(e);
+          alert('Clear failed partway.');
+        });
+    }
+
+    function clearAllSelections() {
+      ensureDisplayName();
+
+      if (firestoreActive) {
+        getDocs(collection(db, COLLAB_COLLECTION)).then(function(qs) {
+          const refs = [];
+          qs.forEach(function(d) {
+            if (d.id !== META_DOC_ID) refs.push(d.ref);
+          });
+          runBatchedDeletes(refs);
+        });
+        return;
+      }
+
+      const idsToClear = Array.from(selectedIds);
+      for (const id of idsToClear) {
+        applyDeselectLocal(id);
+      }
+      persistLocalSelection();
+      updateSidebar();
+    }
+
+    function importSelectedGeoJSON(file) {
+      const reader = new FileReader();
+
+      reader.onload = function(event) {
+        try {
+          const geojson = JSON.parse(event.target.result);
+
+          if (!geojson || geojson.type !== 'FeatureCollection' || !Array.isArray(geojson.features)) {
+            throw new Error('Imported file is not a valid GeoJSON FeatureCollection.');
+          }
+
+          if (firestoreActive) {
+            ensureDisplayName();
+            const ops = [];
+            for (const feature of geojson.features) {
+              const featureId = getFeatureId(feature);
+              const featureName = getFeatureName(feature);
+              if (!featureId) continue;
+              if (!layerById.has(featureId)) continue;
+              ops.push({ featureId: featureId, featureName: featureName, feature: feature });
+            }
+
+            if (ops.length === 0) {
+              alert('No buurten from the file could be matched to the map.');
+              return;
+            }
+
+            const who = displayName || 'Anonymous';
+            const ts = serverTimestamp();
+
+            function commitChunk(start) {
+              const batch = writeBatch(db);
+              const end = Math.min(start + 400, ops.length);
+              for (let i = start; i < end; i += 1) {
+                const op = ops[i];
+                const docId = toFirestoreDocId(op.featureId);
+                const ref = doc(db, COLLAB_COLLECTION, docId);
+                const featCopy = JSON.parse(JSON.stringify(op.feature));
+                batch.set(ref, {
+                  name: op.featureName,
+                  featureJson: JSON.stringify(featCopy),
+                  votes: 0,
+                  updatedBy: who,
+                  updatedAt: ts
+                });
+              }
+              writeMeta(batch, 'import GeoJSON');
+              batch
+                .commit()
+                .then(function() {
+                  if (end < ops.length) {
+                    commitChunk(end);
+                  }
+                })
+                .catch(function(e) {
+                  console.error(e);
+                  alert('Import to cloud failed.\n\n' + firestoreErrorMessage(e));
+                });
+            }
+
+            commitChunk(0);
+            return;
+          }
+
+          let importedCount = 0;
+          let missingCount = 0;
+
+          for (const feature of geojson.features) {
+            const featureId = getFeatureId(feature);
+            const featureName = getFeatureName(feature);
+
+            if (!featureId) {
+              missingCount += 1;
+              continue;
+            }
+
+            const ok = applySelectLocal(featureId, featureName, feature);
+            if (ok) {
+              importedCount += 1;
+            } else {
+              missingCount += 1;
+            }
+          }
+
+          persistLocalSelection();
+          updateSidebar();
+
+          if (importedCount === 0 && missingCount > 0) {
+            alert('No buurten from the imported file could be matched to the current map.');
+          } else if (missingCount > 0) {
+            alert(`Imported ${importedCount} buurten. ${missingCount} could not be matched.`);
+          }
+        } catch (error) {
+          console.error('Import failed:', error);
+          alert('Import failed. Please choose a valid exported GeoJSON file.');
+        }
+      };
+
+      reader.readAsText(file);
+    }
+
+    document.getElementById('import-btn').addEventListener('click', function() {
+      document.getElementById('import-file-input').click();
+    });
+
+    document.getElementById('import-file-input').addEventListener('change', function(event) {
+      const file = event.target.files[0];
+      if (file) {
+        importSelectedGeoJSON(file);
+      }
+      event.target.value = '';
+    });
+
+    document.getElementById('export-json-btn').addEventListener('click', exportSelectedGeoJSON);
+    document.getElementById('export-names-btn').addEventListener('click', exportSelectedNames);
+    document.getElementById('clear-btn').addEventListener('click', clearAllSelections);
+
+    /** Resolves data/buurten.geojson relative to the page URL (fixes GitHub Pages project URLs like /repo vs /repo/). */
+    function geojsonFetchUrl() {
+      const page = new URL(window.location.href);
+      let path = page.pathname;
+      if (!path.endsWith('/')) {
+        if (path.endsWith('.html')) {
+          path = path.replace(/\/[^/]+$/, '/');
+        } else {
+          path = path + '/';
+        }
+      }
+      return new URL('data/buurten.geojson', page.origin + path).href;
+    }
+
+    fetch(geojsonFetchUrl())
+      .then(function(response) {
+        if (!response.ok) {
+          throw new Error(`HTTP error ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(function(data) {
+        const buurtenLayer = L.geoJSON(data, {
+          style: baseStyle,
+          onEachFeature: function(feature, layer) {
+            const featureId = getFeatureId(feature);
+            const featureName = getFeatureName(feature);
+
+            layer.feature = feature;
+            layerById.set(featureId, layer);
+
+            layer.bindTooltip(featureName, {
+              sticky: true,
+              direction: 'top',
+              opacity: 0.95
+            });
+
+            layer.on('mouseover', function() {
+              if (!selectedIds.has(featureId)) {
+                layer.setStyle(hoverStyle());
+              }
+            });
+
+            layer.on('mouseout', function() {
+              applyStyle(layer, selectedIds.has(featureId));
+            });
+
+            layer.on('click', function() {
+              if (firestoreActive) {
+                toggleFirestoreSelection(featureId, featureName, feature);
+              } else {
+                if (selectedIds.has(featureId)) {
+                  applyDeselectLocal(featureId);
+                } else {
+                  applySelectLocal(featureId, featureName, feature);
+                }
+                persistLocalSelection();
+                updateSidebar();
+              }
+            });
+          }
+        }).addTo(map);
+
+        map.fitBounds(buurtenLayer.getBounds());
+        layersReady = true;
+
+        updateDisplayNameUI();
+
+        if (firestoreActive) {
+          restoreLocalSelection();
+          const mapEl = document.getElementById('map');
+
+          function startLiveSync() {
+            setSyncLine('Connecting…');
+            subscribeCollaboration();
+            if (!displayName) {
+              openNameModal(true);
+            }
+          }
+
+          if (selectedIds.size > 0) {
+            setSyncLine('Syncing your selection to the cloud…');
+            if (mapEl) mapEl.style.pointerEvents = 'none';
+            syncLocalSelectionToFirestore()
+              .catch(function(e) {
+                console.error(e);
+                setSyncLine('Could not sync selection — ' + (e && e.code ? e.code : 'error'));
+                alert('Could not upload your selection to the cloud.\n\n' + firestoreErrorMessage(e));
+              })
+              .finally(function() {
+                if (mapEl) mapEl.style.pointerEvents = '';
+                startLiveSync();
+              });
+          } else {
+            startLiveSync();
+          }
+        } else {
+          setSyncLine('Firebase failed to start — using local-only (this browser).');
+          restoreLocalSelection();
+        }
+      })
+      .catch(function(error) {
+        console.error('Could not load buurten GeoJSON:', error);
+        alert(
+          'Could not load data/buurten.geojson (' + geojsonFetchUrl() + '). ' +
+          'Commit and push data/buurten.geojson, use HTTP (not file://), and on GitHub Pages use the /repo/ URL.'
+        );
+      });
+  </script>
+</body>
+</html>
+      box-sizing: border-box;
+      background: rgba(255,255,255,0.96);
+      padding: 12px;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+      min-width: 260px;
+      max-width: 360px;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .info-box-top {
+      flex: 0 0 auto;
+    }
+
+    .info-box h3 {
+      margin: 0 0 8px 0;
+      font-size: 15px;
+    }
+
+    .identity-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+
+    .identity-row span {
+      color: #374151;
+    }
+
+    .identity-row button.small {
+      padding: 4px 8px;
+      font-size: 12px;
+      background: #e5e7eb;
+      color: #111827;
+    }
+
+    .sync-line {
+      font-size: 12px;
+      color: #4b5563;
+      margin-bottom: 8px;
+      word-break: break-word;
+    }
+
+    .sync-line strong {
+      color: #111827;
+    }
+
+    .controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+      margin-bottom: 10px;
+    }
+
+    button {
+      appearance: none;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 13px;
+      background: #111827;
+      color: white;
+    }
+
+    button.secondary {
+      background: #6b7280;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    button.vote-btn {
+      background: #0d9488;
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+
+    #selection-list {
+      flex: 1 1 auto;
+      min-height: 0;
+      margin: 10px 0 0 0;
+      padding: 0;
+      padding-right: 4px;
+      max-height: min(280px, 42vh);
+      overflow-y: auto;
+      overflow-x: hidden;
+      list-style: none;
+      border-top: 1px solid #e5e7eb;
+      padding-top: 8px;
+    }
+
+    #selection-list li {
+      margin-bottom: 8px;
+      word-break: break-word;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      border-bottom: 1px solid #e5e7eb;
+      padding-bottom: 6px;
+    }
+
+    #selection-list li:last-child {
+      border-bottom: none;
+    }
+
+    .li-name {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .li-votes {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .vote-count {
+      font-size: 12px;
+      color: #6b7280;
+      min-width: 1.5em;
+      text-align: right;
+    }
+
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 2000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .modal-overlay[hidden] {
+      display: none;
+    }
+
+    .modal-box {
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 360px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+
+    .modal-box h2 {
+      margin: 0 0 12px 0;
+      font-size: 17px;
+    }
+
+    .modal-box p {
+      margin: 0 0 12px 0;
+      font-size: 14px;
+      color: #4b5563;
+    }
+
+    .modal-box input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 15px;
+      margin-bottom: 12px;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="info-box">
+    <div class="info-box-top">
+      <h3>Selected buurten</h3>
+
+      <div class="identity-row">
+        <span>You: <strong id="display-name-label"></strong></span>
+        <button type="button" class="small" id="change-name-btn">Change name</button>
+      </div>
+
+      <div class="sync-line" id="sync-line">Loading…</div>
+
+      <div id="selection-count">0 selected</div>
+
+      <div class="controls">
+        <button type="button" id="import-btn">Import GeoJSON</button>
+        <button type="button" id="export-json-btn" disabled>Export GeoJSON</button>
+        <button type="button" id="export-names-btn" disabled>Export names</button>
+        <button type="button" id="clear-btn" class="secondary" disabled>Clear all</button>
+      </div>
+    </div>
+
+    <ul id="selection-list"></ul>
+  </div>
+
+  <div id="name-modal" class="modal-overlay" hidden>
+    <div class="modal-box" role="dialog" aria-labelledby="name-modal-title">
+      <h2 id="name-modal-title">Your name</h2>
+      <p>This name is shown when you change the shared map. It is stored only in this browser.</p>
+      <input type="text" id="name-input" maxlength="80" placeholder="e.g. Valentijn" autocomplete="nickname" />
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="name-cancel-btn">Cancel</button>
+        <button type="button" id="name-save-btn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <input
+    id="import-file-input"
+    type="file"
+    accept=".geojson,.json,application/geo+json,application/json"
+    style="display:none"
+  />
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script type="module">
+    import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js';
+    import { getAnalytics } from 'https://www.gstatic.com/firebasejs/12.11.0/firebase-analytics.js';
+    import {
+      getFirestore,
+      collection,
+      doc,
+      onSnapshot,
+      writeBatch,
+      getDocs,
+      serverTimestamp,
+      increment
+    } from 'https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js';
+
+    /**
+     * Firestore: create DB in Firebase Console. If saves never persist, open DevTools → Console
+     * for errors; most often rules block writes. Example (development only — tighten for production):
+     *
+     * match /buurten_collab/{document=**} {
+     *   allow read, write: if true;
+     * }
+     *
+     * Web API keys are public; security is enforced by rules (and App Check if enabled).
+     */
+    const firebaseConfig = {
+      apiKey: 'AIzaSyDPoRRQic5DNcNL3MJzwW5ex13GRGBMnCg',
+      authDomain: 'amsterdam-buurten.firebaseapp.com',
+      projectId: 'amsterdam-buurten',
+      storageBucket: 'amsterdam-buurten.firebasestorage.app',
+      messagingSenderId: '684638441503',
+      appId: '1:684638441503:web:06ae83f3ab571f4955c52a',
+      measurementId: 'G-408J4KXF9S'
+    };
+
+    const app = initializeApp(firebaseConfig);
+    try {
+      getAnalytics(app);
+    } catch (e) {
+      console.warn('Firebase Analytics unavailable', e);
+    }
+
+    let db = null;
+    try {
+      db = getFirestore(app);
+    } catch (e) {
+      console.error('Firebase init failed', e);
+    }
+    const firestoreActive = !!db;
+
+    const COLLAB_COLLECTION = 'buurten_collab';
+    const META_DOC_ID = '_meta';
+    const LOCAL_STORAGE_KEY = 'buurten_local_selection_v1';
+    const NAME_STORAGE_KEY = 'buurten_display_name';
+
+    const map = L.map('map').setView([52.3728, 4.8936], 12);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const selectedIds = new Set();
+    const selectedNames = new Map();
+    const selectedFeatures = new Map();
+    const voteById = new Map();
+    const layerById = new Map();
+
+    let displayName = localStorage.getItem(NAME_STORAGE_KEY) || '';
+    let layersReady = false;
+    let unsubCollab = null;
 
     function getFeatureId(feature) {
       return (
