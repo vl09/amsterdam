@@ -140,6 +140,10 @@
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
+    map.on('click', function(e) {
+      console.log('[buurten] map container click (background / not stopped by a polygon)', e.latlng);
+    });
+
     const selectedIds = new Set();
     const selectedNames = new Map();
     const selectedFeatures = new Map();
@@ -271,6 +275,7 @@
 
     function ensureDisplayName() {
       if (!displayName) {
+        console.warn('[buurten] No display name — opening name modal (set a name to collaborate)');
         openNameModal(true);
       }
     }
@@ -393,7 +398,10 @@
 
     function applySelectLocal(featureId, featureName, feature) {
       const layer = layerById.get(featureId);
-      if (!layer) return false;
+      if (!layer) {
+        console.warn('[buurten] applySelectLocal: no layer for id', featureId);
+        return false;
+      }
 
       selectedIds.add(featureId);
       selectedNames.set(featureId, featureName);
@@ -632,14 +640,24 @@
     }
 
     function toggleFirestoreSelection(featureId, featureName, feature) {
-      if (!db) return;
+      console.log('[buurten] toggleFirestoreSelection', {
+        featureId,
+        featureName,
+        hasDb: !!db,
+        firestoreActive: firestoreActive
+      });
+      if (!db) {
+        console.warn('[buurten] toggleFirestoreSelection: aborted (no db)');
+        return;
+      }
       ensureDisplayName();
 
       const docId = toFirestoreDocId(featureId);
       const ref = doc(db, COLLAB_COLLECTION, docId);
       const batch = writeBatch(db);
+      const wasSelected = selectedIds.has(featureId);
 
-      if (selectedIds.has(featureId)) {
+      if (wasSelected) {
         batch.delete(ref);
         writeMeta(batch, 'removed buurt');
       } else {
@@ -654,11 +672,16 @@
         writeMeta(batch, 'added buurt');
       }
 
-      batch.commit().catch(function(e) {
-        console.error(e);
-        setSyncLine('Save failed — ' + (e && e.code ? e.code : 'error'));
-        alert('Could not save to the cloud.\n\n' + firestoreErrorMessage(e));
-      });
+      batch
+        .commit()
+        .then(function() {
+          console.log('[buurten] Firestore commit OK', { docId, action: wasSelected ? 'removed' : 'added' });
+        })
+        .catch(function(e) {
+          console.error('[buurten] Firestore commit failed', e);
+          setSyncLine('Save failed — ' + (e && e.code ? e.code : 'error'));
+          alert('Could not save to the cloud.\n\n' + firestoreErrorMessage(e));
+        });
     }
 
     function upvoteFeature(featureId) {
@@ -861,11 +884,17 @@
         return response.json();
       })
       .then(function(data) {
+        const nFeat = data && data.features ? data.features.length : 0;
+        console.log('[buurten] GeoJSON loaded', { features: nFeat, firestoreActive });
+
         const buurtenLayer = L.geoJSON(data, {
           style: baseStyle,
           onEachFeature: function(feature, layer) {
             const featureId = getFeatureId(feature);
             const featureName = getFeatureName(feature);
+            if (featureId == null || featureId === '') {
+              console.warn('[buurten] Feature missing identificatie/id — clicks may not work', featureName, feature);
+            }
 
             layer.feature = feature;
             layerById.set(featureId, layer);
@@ -886,14 +915,22 @@
               applyStyle(layer, selectedIds.has(featureId));
             });
 
-            layer.on('click', function() {
+            layer.on('click', function(ev) {
+              console.log('[buurten] polygon click', {
+                featureId,
+                featureName,
+                firestoreActive,
+                originalEvent: ev && ev.originalEvent ? ev.originalEvent.type : '(none)'
+              });
               if (firestoreActive) {
                 toggleFirestoreSelection(featureId, featureName, feature);
               } else {
                 if (selectedIds.has(featureId)) {
+                  console.log('[buurten] local mode: deselect', featureId);
                   applyDeselectLocal(featureId);
                 } else {
-                  applySelectLocal(featureId, featureName, feature);
+                  const ok = applySelectLocal(featureId, featureName, feature);
+                  console.log('[buurten] local mode: select', featureId, ok ? 'ok' : 'failed (no layer)');
                 }
                 persistLocalSelection();
                 updateSidebar();
@@ -955,4 +992,5 @@
 </body>
 <!-- Do not paste another full page below this point. -->
 </html>
+
 
