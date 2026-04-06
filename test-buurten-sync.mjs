@@ -1,27 +1,38 @@
+#!/usr/bin/env node
 /**
- * Run: node test-buurten-sync.mjs
- * Verifies Firestore doc id encoding round-trips (same logic as index.html).
+ * Run: node test-vote-logic.mjs
+ * Mirrors vote toggle math used in index.html (shared Firestore voting).
  */
 import assert from 'node:assert/strict';
 
-function toFirestoreDocId(featureId) {
-  return encodeURIComponent(String(featureId));
+function talliesFromVoters(voters) {
+  let up = 0;
+  let down = 0;
+  for (const v of Object.values(voters)) {
+    if (v === 1) up += 1;
+    else if (v === -1) down += 1;
+  }
+  return { up, down };
 }
 
-function fromFirestoreDocId(docId) {
-  return decodeURIComponent(docId);
+function computeNextVote(prev, direction) {
+  if (direction === 'up') {
+    if (prev === 1) return 0;
+    return 1;
+  }
+  if (prev === -1) return 0;
+  return -1;
 }
 
-const samples = [
-  'abc-def-123',
-  'naam met spaties',
-  'unicode-??',
-  'slash/slash',
-  '100%_test'
-];
+assert.equal(computeNextVote(0, 'up'), 1);
+assert.equal(computeNextVote(1, 'up'), 0);
+assert.equal(computeNextVote(-1, 'up'), 1);
+assert.equal(computeNextVote(0, 'down'), -1);
+assert.equal(computeNextVote(-1, 'down'), 0);
+assert.equal(computeNextVote(1, 'down'), -1);
 
-for (const s of samples) {
-  assert.equal(fromFirestoreDocId(toFirestoreDocId(s)), s);
-}
+const t1 = talliesFromVoters({ a: 1, b: 1, c: -1 });
+assert.equal(t1.up, 2);
+assert.equal(t1.down, 1);
 
-console.log('test-buurten-sync.mjs: ok');
+console.log('test-vote-logic.mjs: ok');
