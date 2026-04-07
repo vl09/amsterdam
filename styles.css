@@ -47,6 +47,32 @@ html, body {
   overflow: hidden;
 }
 
+.sort-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 8px 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.sort-row label {
+  font-size: 12px;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+
+.sort-row select {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  color: #111827;
+}
+
 .info-box h3 {
   margin: 0 0 8px 0;
   font-size: 15px;
