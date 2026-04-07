@@ -116,6 +116,14 @@ button.vote-btn {
   font-size: 12px;
 }
 
+button.vote-btn.vote-arrow {
+  min-width: 32px;
+  padding-left: 8px;
+  padding-right: 8px;
+  font-size: 15px;
+  line-height: 1.1;
+}
+
 button.vote-btn.vote-up {
   background: #0d9488;
   color: #fff;
@@ -129,6 +137,38 @@ button.vote-btn.vote-down {
 button.vote-btn.vote-active {
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.85);
   font-weight: 700;
+}
+
+.li-vote-strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.vote-net {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+  min-width: 1.75rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+button.btn-info-buurt {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  font-style: italic;
+  background: #e5e7eb;
+  color: #374151;
+}
+
+button.btn-info-buurt:hover {
+  background: #d1d5db;
 }
 
 #selection-list {
@@ -163,22 +203,6 @@ button.vote-btn.vote-active {
   min-width: 0;
 }
 
-button.rm-buurt {
-  flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  line-height: 1;
-  font-size: 18px;
-  background: #f3f4f6;
-  color: #374151;
-  border-radius: 6px;
-}
-
-button.rm-buurt:hover {
-  background: #e5e7eb;
-}
-
 .vote-modal-buurt-name {
   font-weight: 600;
   color: #111827;
@@ -199,18 +223,52 @@ button.rm-buurt:hover {
   align-items: center;
 }
 
-.li-votes {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
+.modal-box-wide {
+  max-width: 420px;
 }
 
-.vote-count {
-  font-size: 12px;
+.buurt-info-stats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0 0 16px 0;
+  font-size: 14px;
+}
+
+.buurt-info-stats dt {
+  margin: 0;
   color: #6b7280;
-  min-width: 1.5em;
-  text-align: right;
+}
+
+.buurt-info-stats dd {
+  margin: 0;
+  font-weight: 600;
+  color: #111827;
+}
+
+.buurt-info-subh {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  color: #374151;
+}
+
+.buurt-info-voter-list {
+  margin: 0 0 16px 0;
+  padding-left: 1.1em;
+  font-size: 14px;
+  color: #374151;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.buurt-info-empty {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0 0 16px 0;
+}
+
+.buurt-info-actions {
+  flex-wrap: wrap;
 }
 
 .modal-overlay {
@@ -263,3 +321,4 @@ button.rm-buurt:hover {
   gap: 8px;
   justify-content: flex-end;
 }
+
