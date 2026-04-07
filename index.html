@@ -11,7 +11,7 @@
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
-  <link rel="stylesheet" href="styles.css?v=12" />
+  <link rel="stylesheet" href="styles.css?v=13" />
 </head>
 <body>
   <div id="map"></div>
@@ -64,15 +64,15 @@
     </div>
   </div>
 
-  <div id="vote-modal" class="modal-overlay" hidden>
-    <div class="modal-box" role="dialog" aria-labelledby="vote-modal-title">
-      <h2 id="vote-modal-title">Vote</h2>
-      <p id="vote-modal-buurt" class="vote-modal-buurt-name"></p>
-      <p class="vote-modal-hint">Your vote is stored under your display name and synced for everyone.</p>
+  <div id="vote-modal" class="modal-overlay vote-modal-overlay" hidden>
+    <div class="modal-box vote-modal-box" role="dialog" aria-labelledby="vote-modal-buurt">
+      <div class="vote-modal-head">
+        <h2 id="vote-modal-buurt" class="vote-modal-buurt-title"></h2>
+        <button type="button" class="vote-modal-close-x" id="vote-m-close" aria-label="Close">×</button>
+      </div>
       <div class="vote-modal-actions">
-        <button type="button" class="vote-btn vote-arrow vote-up vote-muted" id="vote-m-up" title="Upvote — click again to remove your vote" aria-label="Upvote">↑</button>
-        <button type="button" class="vote-btn vote-arrow vote-down vote-muted" id="vote-m-down" title="Downvote — click again to remove your vote" aria-label="Downvote">↓</button>
-        <button type="button" class="secondary" id="vote-m-close">Close</button>
+        <button type="button" class="vote-btn vote-arrow vote-up vote-muted" id="vote-m-up" title="Upvote — tap again to remove" aria-label="Upvote">↑</button>
+        <button type="button" class="vote-btn vote-arrow vote-down vote-muted" id="vote-m-down" title="Downvote — tap again to remove" aria-label="Downvote">↓</button>
       </div>
     </div>
   </div>
