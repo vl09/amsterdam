@@ -163,6 +163,42 @@ button.vote-btn.vote-active {
   min-width: 0;
 }
 
+button.rm-buurt {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  line-height: 1;
+  font-size: 18px;
+  background: #f3f4f6;
+  color: #374151;
+  border-radius: 6px;
+}
+
+button.rm-buurt:hover {
+  background: #e5e7eb;
+}
+
+.vote-modal-buurt-name {
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 8px 0;
+}
+
+.vote-modal-hint {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0 0 16px 0;
+}
+
+.vote-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-start;
+  align-items: center;
+}
+
 .li-votes {
   display: flex;
   align-items: center;
