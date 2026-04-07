@@ -11,7 +11,7 @@
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
-  <link rel="stylesheet" href="styles.css?v=9" />
+  <link rel="stylesheet" href="styles.css?v=10" />
 </head>
 <body>
   <div id="map"></div>
@@ -38,6 +38,16 @@
     </div>
 
     <div class="info-box-list-wrap">
+      <div class="sort-row">
+        <label for="sort-select">Sort</label>
+        <select id="sort-select" aria-label="Sort buurten list">
+          <option value="name">Name A–Z</option>
+          <option value="name_desc">Name Z–A</option>
+          <option value="upvotes">Upvotes (high first)</option>
+          <option value="downvotes">Downvotes (high first)</option>
+          <option value="net">Net score (high first)</option>
+        </select>
+      </div>
       <ul id="selection-list"></ul>
     </div>
   </div>
@@ -169,6 +179,7 @@
     const META_DOC_ID = '_meta';
     const LOCAL_STORAGE_KEY = 'buurten_local_selection_v1';
     const NAME_STORAGE_KEY = 'buurten_display_name';
+    const SORT_STORAGE_KEY = 'buurten_list_sort';
 
     const map = L.map(mapEl).setView([52.3728, 4.8936], 12);
 
@@ -534,15 +545,52 @@
       populateBuurtInfoModal(buurtInfoModalId);
     }
 
+    function sortSelectedEntries(entries) {
+      const sel = document.getElementById('sort-select');
+      const mode = sel && sel.value ? sel.value : 'name';
+      const byName = function(a, b) {
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      };
+      const list = entries.slice();
+      switch (mode) {
+        case 'name_desc':
+          list.sort(function(a, b) {
+            return byName(b, a);
+          });
+          break;
+        case 'upvotes':
+          list.sort(function(a, b) {
+            if (b.up !== a.up) return b.up - a.up;
+            return byName(a, b);
+          });
+          break;
+        case 'downvotes':
+          list.sort(function(a, b) {
+            if (b.down !== a.down) return b.down - a.down;
+            return byName(a, b);
+          });
+          break;
+        case 'net':
+          list.sort(function(a, b) {
+            if (b.net !== a.net) return b.net - a.net;
+            return byName(a, b);
+          });
+          break;
+        default:
+          list.sort(byName);
+      }
+      return list;
+    }
+
     function updateSidebar() {
-      const entries = Array.from(selectedNames.entries())
-        .map(([id, name]) => {
+      const entries = sortSelectedEntries(
+        Array.from(selectedNames.entries()).map(([id, name]) => {
           const c = voteCountsById.get(id) || { up: 0, down: 0 };
           const my = myVoteById.get(id) || 0;
           const net = c.up - c.down;
           return { id, name, up: c.up, down: c.down, my, net };
         })
-        .sort((a, b) => a.name.localeCompare(b.name));
+      );
 
       document.getElementById('selection-count').textContent = `${entries.length} selected`;
 
@@ -1334,6 +1382,23 @@
     document.getElementById('export-json-btn').addEventListener('click', exportSelectedGeoJSON);
     document.getElementById('export-names-btn').addEventListener('click', exportSelectedNames);
     document.getElementById('clear-btn').addEventListener('click', clearAllSelections);
+
+    void (function initSortSelect() {
+      const sel = document.getElementById('sort-select');
+      if (!sel) return;
+      try {
+        const v = localStorage.getItem(SORT_STORAGE_KEY);
+        if (v && Array.from(sel.options).some(function(o) { return o.value === v; })) {
+          sel.value = v;
+        }
+      } catch (e) {}
+      sel.addEventListener('change', function() {
+        try {
+          localStorage.setItem(SORT_STORAGE_KEY, sel.value);
+        } catch (e) {}
+        updateSidebar();
+      });
+    })();
 
     /** Resolves data/buurten.geojson relative to the page URL (fixes GitHub Pages project URLs like /repo vs /repo/). */
     function geojsonFetchUrl() {
