@@ -312,6 +312,14 @@
       return { fillColor: '#fb923c', fillOpacity: 0.26 };
     }
 
+    /** Community net &gt; 0 but this user has not up/downvoted yet — lighter mint */
+    function heatmapFillPositiveCommunityOnly(hover) {
+      return {
+        fillColor: '#bbf7d0',
+        fillOpacity: hover ? 0.42 : 0.3
+      };
+    }
+
     /** Default look: not in your list, no net community score — still clickable */
     function neutralSelectableFill(hover) {
       return {
@@ -332,8 +340,16 @@
       const hover = opts.hover === true;
       const net = voteNetById.has(featureId) ? voteNetById.get(featureId) : 0;
       const selected = selectedIds.has(featureId);
-      const fill =
-        !selected && net === 0 ? neutralSelectableFill(hover) : heatmapFillFromNet(net);
+      const my = myVoteById.get(featureId);
+      const myV = my === 1 || my === -1 ? my : 0;
+      let fill;
+      if (!selected && net === 0) {
+        fill = neutralSelectableFill(hover);
+      } else if (net > 0 && (!selected || myV === 0)) {
+        fill = heatmapFillPositiveCommunityOnly(hover);
+      } else {
+        fill = heatmapFillFromNet(net);
+      }
       return Object.assign({}, fill, {
         color: selected ? '#b91c1c' : '#4b5563',
         weight: hover ? 2 : selected ? 3 : 1,
@@ -1476,7 +1492,13 @@
             layer.on('click', function() {
               if (firestoreActive) {
                 if (selectedIds.has(featureId)) {
-                  openVoteModal(featureId, featureName);
+                  const my = myVoteById.get(featureId);
+                  const hasMyVote = my === 1 || my === -1;
+                  if (!hasMyVote) {
+                    applyVoteToggle(featureId, 'up');
+                  } else {
+                    openVoteModal(featureId, featureName);
+                  }
                 } else {
                   addBuurtWithInitialUpvote(featureId, featureName, feature);
                 }
