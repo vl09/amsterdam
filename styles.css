@@ -235,24 +235,74 @@ button.btn-info-buurt:hover {
   min-width: 0;
 }
 
-.vote-modal-buurt-name {
-  font-weight: 600;
-  color: #111827;
-  margin: 0 0 8px 0;
+.vote-modal-overlay {
+  align-items: center;
+  justify-content: center;
 }
 
-.vote-modal-hint {
-  font-size: 13px;
-  color: #6b7280;
-  margin: 0 0 16px 0;
+.vote-modal-box {
+  position: relative;
+  max-width: 400px;
+  padding: 16px 16px 20px;
+}
+
+.vote-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+  min-height: 44px;
+}
+
+.vote-modal-buurt-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding-right: 4px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #111827;
+  word-break: break-word;
+}
+
+.vote-modal-close-x {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  margin: -6px -6px 0 0;
+  padding: 0;
+  border: none;
+  border-radius: 10px;
+  background: #f3f4f6;
+  color: #374151;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.vote-modal-close-x:hover {
+  background: #e5e7eb;
 }
 
 .vote-modal-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-start;
+  flex-wrap: nowrap;
+  gap: 28px;
+  justify-content: center;
   align-items: center;
+}
+
+.vote-modal-box .vote-btn.vote-arrow {
+  min-width: 56px;
+  min-height: 52px;
+  padding: 12px 20px;
+  font-size: 24px;
+  border-radius: 12px;
 }
 
 .modal-box-wide {
@@ -354,7 +404,7 @@ button.btn-info-buurt:hover {
   justify-content: flex-end;
 }
 
-/* �� Mobile: map ~2/3, panel ~1/3; hide import/export/delete �� */
+/* Mobile: half-height bottom panel; hide import/export/delete */
 @media (max-width: 768px) {
   html {
     height: 100%;
@@ -464,10 +514,54 @@ button.btn-info-buurt:hover {
     -webkit-overflow-scrolling: touch;
   }
 
+  .vote-modal-overlay {
+    align-items: flex-end;
+    justify-content: center;
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+
+  .vote-modal-box {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    border-radius: 18px 18px 0 0;
+    padding: 14px 16px max(24px, env(safe-area-inset-bottom));
+    max-height: min(55vh, 55dvh);
+  }
+
+  .vote-modal-head {
+    margin-bottom: 16px;
+  }
+
+  .vote-modal-buurt-title {
+    font-size: 24px;
+  }
+
+  .vote-modal-close-x {
+    width: 48px;
+    height: 48px;
+    font-size: 34px;
+    margin: -8px -8px 0 0;
+  }
+
+  .vote-modal-actions {
+    gap: 40px;
+    padding: 12px 0 8px;
+  }
+
+  .vote-modal-box .vote-btn.vote-arrow {
+    min-width: 80px;
+    min-height: 72px;
+    font-size: 34px;
+    padding: 16px 28px;
+    border-radius: 14px;
+  }
+
   @supports (height: 100dvh) {
     .info-box {
       flex-basis: 50dvh;
     }
   }
 }
+
 
