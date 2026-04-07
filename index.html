@@ -112,6 +112,7 @@
       writeBatch,
       getDocs,
       getDoc,
+      deleteField,
       serverTimestamp,
       runTransaction
     } from 'https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js';
@@ -1094,17 +1095,23 @@
           if (next === 0) delete nextVoters[vkey];
           else nextVoters[vkey] = next;
           const tallies = talliesFromVoters(nextVoters);
-          transaction.set(
-            ref,
-            {
-              voters: nextVoters,
-              upvotes: tallies.up,
-              downvotes: tallies.down,
-              updatedBy: self,
-              updatedAt: serverTimestamp()
-            },
-            { merge: true }
-          );
+          /*
+           * Do not use set(merge) with a full voters map: Firestore merges maps
+           * recursively, so removed keys reappear. Use update + deleteField instead.
+           */
+          const voterFieldPath = 'voters.' + vkey;
+          const payload = {
+            upvotes: tallies.up,
+            downvotes: tallies.down,
+            updatedBy: self,
+            updatedAt: serverTimestamp()
+          };
+          if (next === 0) {
+            payload[voterFieldPath] = deleteField();
+          } else {
+            payload[voterFieldPath] = next;
+          }
+          transaction.update(ref, payload);
         });
       })
         .then(function() {
