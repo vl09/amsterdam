@@ -11,7 +11,7 @@
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
-  <link rel="stylesheet" href="styles.css?v=11" />
+  <link rel="stylesheet" href="styles.css?v=12" />
 </head>
 <body>
   <div id="map"></div>
@@ -1482,7 +1482,13 @@
           }
         }).addTo(map);
 
-        map.fitBounds(buurtenLayer.getBounds());
+        const layerBounds = buurtenLayer.getBounds();
+        if (window.matchMedia('(max-width: 768px)').matches) {
+          map.fitBounds(layerBounds, { padding: [8, 8], maxZoom: 15 });
+        } else {
+          map.fitBounds(layerBounds);
+        }
+        requestAnimationFrame(invalidateMapSize);
         layersReady = true;
         refreshAllHeatmapStyles();
 
