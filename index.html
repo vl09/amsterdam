@@ -243,10 +243,18 @@
       return { fillColor: '#fb923c', fillOpacity: 0.26 };
     }
 
+    /** Default look: not in your list, no net community score — still clickable */
+    function neutralSelectableFill(hover) {
+      return {
+        fillColor: '#9ca3af',
+        fillOpacity: hover ? 0.34 : 0.22
+      };
+    }
+
     function pathStyleForFeatureId(featureId, opts) {
       opts = opts || {};
       if (featureId == null || featureId === '') {
-        return Object.assign({}, heatmapFillFromNet(0), {
+        return Object.assign({}, neutralSelectableFill(false), {
           color: '#4b5563',
           weight: 1,
           opacity: 0.95
@@ -254,8 +262,9 @@
       }
       const hover = opts.hover === true;
       const net = voteNetById.has(featureId) ? voteNetById.get(featureId) : 0;
-      const fill = heatmapFillFromNet(net);
       const selected = selectedIds.has(featureId);
+      const fill =
+        !selected && net === 0 ? neutralSelectableFill(hover) : heatmapFillFromNet(net);
       return Object.assign({}, fill, {
         color: selected ? '#b91c1c' : '#4b5563',
         weight: hover ? 2 : selected ? 3 : 1,
@@ -379,9 +388,29 @@
       const code = err && err.code ? err.code : '';
       const msg = err && err.message ? err.message : String(err);
       if (code === 'permission-denied') {
+        if (
+          /Cloud Firestore API has not been used|Firestore API has not been used|API has not been used in project|is disabled/i.test(
+            msg
+          )
+        ) {
+          return (
+            'The Cloud Firestore API is disabled or Firestore is not set up for this Firebase project.\n\n' +
+            '1) Open Google Cloud Console and enable the API for project amsterdam-buurten:\n' +
+            '   https://console.developers.google.com/apis/api/firestore.googleapis.com/overview?project=amsterdam-buurten\n' +
+            '   Click Enable, then wait a few minutes.\n\n' +
+            '2) In Firebase Console → Build → Firestore Database, create the database if you have not yet (start in production or test mode).\n\n' +
+            '3) Then deploy Firestore security rules (see firestore.rules in the repo) or paste rules in Firebase → Firestore → Rules.\n\n' +
+            'Original error: ' +
+            msg
+          );
+        }
         return (
-          'Firestore permission denied. In Firebase Console → Firestore → Rules, allow read/write for buurten_collab, e.g.:\n' +
-          "match /buurten_collab/{d} { allow read, write: if true; }"
+          'Firestore returned permission denied. This is often either:\n' +
+          'A) Security rules: Firebase Console → Firestore → Rules — allow access to buurten_collab, e.g.:\n' +
+          "   match /buurten_collab/{document=**} { allow read, write: if true; }\n\n" +
+          'B) Cloud Firestore API disabled: enable it for the project (same link as in the Firebase error in the console).\n\n' +
+          'Original error: ' +
+          msg
         );
       }
       return msg + (code ? ' (' + code + ')' : '');
