@@ -11,7 +11,7 @@
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
-  <link rel="stylesheet" href="styles.css?v=7" />
+  <link rel="stylesheet" href="styles.css?v=8" />
 </head>
 <body>
   <div id="map"></div>
@@ -60,9 +60,30 @@
       <p id="vote-modal-buurt" class="vote-modal-buurt-name"></p>
       <p class="vote-modal-hint">Your vote is stored under your display name and synced for everyone.</p>
       <div class="vote-modal-actions">
-        <button type="button" class="vote-btn vote-up" id="vote-m-up">+1 Up</button>
-        <button type="button" class="vote-btn vote-down" id="vote-m-down">−1 Down</button>
+        <button type="button" class="vote-btn vote-up vote-arrow" id="vote-m-up" title="Upvote" aria-label="Upvote">↑</button>
+        <button type="button" class="vote-btn vote-down vote-arrow" id="vote-m-down" title="Downvote" aria-label="Downvote">↓</button>
         <button type="button" class="secondary" id="vote-m-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="buurt-info-modal" class="modal-overlay" hidden>
+    <div class="modal-box modal-box-wide" role="dialog" aria-labelledby="buurt-info-title">
+      <h2 id="buurt-info-title"></h2>
+      <dl class="buurt-info-stats">
+        <dt>Net score</dt>
+        <dd id="buurt-info-net"></dd>
+        <dt>Total upvotes</dt>
+        <dd id="buurt-info-up"></dd>
+        <dt>Total downvotes</dt>
+        <dd id="buurt-info-down"></dd>
+      </dl>
+      <h3 class="buurt-info-subh">People who voted</h3>
+      <ul id="buurt-info-voters" class="buurt-info-voter-list"></ul>
+      <p id="buurt-info-no-voters" class="buurt-info-empty" hidden>No votes yet.</p>
+      <div class="modal-actions buurt-info-actions">
+        <button type="button" class="secondary" id="buurt-info-remove">Remove from list</button>
+        <button type="button" id="buurt-info-close">Close</button>
       </div>
     </div>
   </div>
@@ -160,6 +181,8 @@
     const voteCountsById = new Map();
     /** Current user's vote for each selected buurt: 1 | -1 | 0 */
     const myVoteById = new Map();
+    /** Encoded key → 1 | -1 per buurt (from Firestore), for info modal */
+    const votersById = new Map();
     const layerById = new Map();
 
     let displayName = localStorage.getItem(NAME_STORAGE_KEY) || '';
@@ -171,6 +194,7 @@
     /** Net score (up − down) per buurt id from Firestore, for heatmap; buurten without docs → 0 */
     const voteNetById = new Map();
     let voteModalBuurtId = null;
+    let buurtInfoModalId = null;
 
     function getFeatureId(feature) {
       return (
@@ -196,6 +220,14 @@
 
     function fromFirestoreDocId(docId) {
       return decodeURIComponent(docId);
+    }
+
+    function voterLabelFromKey(encodedKey) {
+      try {
+        return decodeURIComponent(encodedKey);
+      } catch {
+        return encodedKey;
+      }
     }
 
     function voterMapKey(name) {
@@ -366,6 +398,13 @@
     });
     document.getElementById('vote-m-close').addEventListener('click', closeVoteModal);
 
+    document.getElementById('buurt-info-close').addEventListener('click', closeBuurtInfoModal);
+    document.getElementById('buurt-info-remove').addEventListener('click', function() {
+      if (buurtInfoModalId != null) {
+        removeBuurtFromCloud(buurtInfoModalId);
+      }
+    });
+
     function ensureDisplayName() {
       if (!displayName) {
         openNameModal(true);
@@ -425,12 +464,68 @@
       document.getElementById('clear-btn').disabled = count === 0;
     }
 
+    function populateBuurtInfoModal(featureId) {
+      const name = selectedNames.get(featureId) || '';
+      const c = voteCountsById.get(featureId) || { up: 0, down: 0 };
+      const net = c.up - c.down;
+      document.getElementById('buurt-info-title').textContent = name || 'Buurt';
+      document.getElementById('buurt-info-net').textContent = String(net);
+      document.getElementById('buurt-info-up').textContent = String(c.up);
+      document.getElementById('buurt-info-down').textContent = String(c.down);
+      const voters = votersById.get(featureId) || {};
+      const ul = document.getElementById('buurt-info-voters');
+      const emptyEl = document.getElementById('buurt-info-no-voters');
+      ul.innerHTML = '';
+      const keys = Object.keys(voters).filter(function(k) {
+        const v = voters[k];
+        return v === 1 || v === -1;
+      });
+      keys.sort(function(a, b) {
+        return voterLabelFromKey(a).localeCompare(voterLabelFromKey(b));
+      });
+      if (keys.length === 0) {
+        emptyEl.hidden = false;
+      } else {
+        emptyEl.hidden = true;
+        for (let i = 0; i < keys.length; i += 1) {
+          const k = keys[i];
+          const li = document.createElement('li');
+          const arrow = voters[k] === 1 ? '\u2191' : '\u2193';
+          li.textContent = voterLabelFromKey(k) + ' \u2014 ' + arrow;
+          ul.appendChild(li);
+        }
+      }
+    }
+
+    function openBuurtInfoModal(featureId) {
+      buurtInfoModalId = featureId;
+      populateBuurtInfoModal(featureId);
+      document.getElementById('buurt-info-modal').hidden = false;
+    }
+
+    function closeBuurtInfoModal() {
+      buurtInfoModalId = null;
+      document.getElementById('buurt-info-modal').hidden = true;
+    }
+
+    function refreshBuurtInfoModalIfOpen() {
+      if (buurtInfoModalId == null) return;
+      const modal = document.getElementById('buurt-info-modal');
+      if (modal.hidden) return;
+      if (!selectedIds.has(buurtInfoModalId)) {
+        closeBuurtInfoModal();
+        return;
+      }
+      populateBuurtInfoModal(buurtInfoModalId);
+    }
+
     function updateSidebar() {
       const entries = Array.from(selectedNames.entries())
         .map(([id, name]) => {
           const c = voteCountsById.get(id) || { up: 0, down: 0 };
           const my = myVoteById.get(id) || 0;
-          return { id, name, up: c.up, down: c.down, my };
+          const net = c.up - c.down;
+          return { id, name, up: c.up, down: c.down, my, net };
         })
         .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -448,56 +543,57 @@
         li.appendChild(nameSpan);
 
         if (firestoreActive) {
-          const rm = document.createElement('button');
-          rm.type = 'button';
-          rm.className = 'rm-buurt';
-          rm.textContent = '\u00d7';
-          rm.title = 'Remove from list';
-          rm.addEventListener('click', function(e) {
-            e.stopPropagation();
-            removeBuurtFromCloud(entry.id);
-          });
-          li.appendChild(rm);
-        }
+          const strip = document.createElement('div');
+          strip.className = 'li-vote-strip';
 
-        const votesWrap = document.createElement('div');
-        votesWrap.className = 'li-votes';
-
-        const countSpan = document.createElement('span');
-        countSpan.className = 'vote-count';
-        countSpan.textContent =
-          entry.up > 0 || entry.down > 0 ? '\u2191' + entry.up + ' \u2193' + entry.down : '\u00b7';
-        votesWrap.appendChild(countSpan);
-
-        if (firestoreActive) {
           const upBtn = document.createElement('button');
           upBtn.type = 'button';
-          upBtn.className = 'vote-btn vote-up' + (entry.my === 1 ? ' vote-active' : '');
-          upBtn.textContent = '+1';
-          upBtn.title = 'Upvote (shared, one per display name)';
+          upBtn.className = 'vote-btn vote-up vote-arrow' + (entry.my === 1 ? ' vote-active' : '');
+          upBtn.textContent = '\u2191';
+          upBtn.title = 'Upvote';
+          upBtn.setAttribute('aria-label', 'Upvote');
           upBtn.addEventListener('click', function() {
             ensureDisplayName();
             applyVoteToggle(entry.id, 'up');
           });
-          votesWrap.appendChild(upBtn);
+          strip.appendChild(upBtn);
+
+          const netSpan = document.createElement('span');
+          netSpan.className = 'vote-net';
+          netSpan.textContent = String(entry.net);
+          strip.appendChild(netSpan);
 
           const downBtn = document.createElement('button');
           downBtn.type = 'button';
-          downBtn.className = 'vote-btn vote-down' + (entry.my === -1 ? ' vote-active' : '');
-          downBtn.textContent = '\u22121';
-          downBtn.title = 'Downvote (shared, one per display name)';
+          downBtn.className = 'vote-btn vote-down vote-arrow' + (entry.my === -1 ? ' vote-active' : '');
+          downBtn.textContent = '\u2193';
+          downBtn.title = 'Downvote';
+          downBtn.setAttribute('aria-label', 'Downvote');
           downBtn.addEventListener('click', function() {
             ensureDisplayName();
             applyVoteToggle(entry.id, 'down');
           });
-          votesWrap.appendChild(downBtn);
+          strip.appendChild(downBtn);
+
+          const infoBtn = document.createElement('button');
+          infoBtn.type = 'button';
+          infoBtn.className = 'btn-info-buurt';
+          infoBtn.textContent = 'i';
+          infoBtn.title = 'Details and remove';
+          infoBtn.setAttribute('aria-label', 'Buurt details');
+          infoBtn.addEventListener('click', function() {
+            openBuurtInfoModal(entry.id);
+          });
+          strip.appendChild(infoBtn);
+
+          li.appendChild(strip);
         }
 
-        li.appendChild(votesWrap);
         ul.appendChild(li);
       }
 
       updateButtons(entries.length);
+      refreshBuurtInfoModalIfOpen();
     }
 
     function downloadFile(filename, content, mimeType) {
@@ -562,6 +658,7 @@
       selectedFeatures.delete(featureId);
       voteCountsById.delete(featureId);
       myVoteById.delete(featureId);
+      votersById.delete(featureId);
     }
 
     function persistLocalSelection() {
@@ -679,6 +776,7 @@
         const name = data.name || getFeatureName(feature);
         const voteBlock = parseVotePayloadFromDoc(data);
         voteCountsById.set(id, { up: voteBlock.up, down: voteBlock.down });
+        votersById.set(id, Object.assign({}, voteBlock.voters));
         const vk = voterMapKey(displayName);
         const mv = voteBlock.voters[vk];
         myVoteById.set(id, mv === 1 ? 1 : mv === -1 ? -1 : 0);
@@ -859,6 +957,7 @@
       applySelectLocal(featureId, featureName, feature);
       voteCountsById.set(featureId, { up: 1, down: 0 });
       myVoteById.set(featureId, 1);
+      votersById.set(featureId, Object.assign({}, voters));
       voteNetById.set(featureId, 1);
       persistLocalSelection();
       updateSidebar();
@@ -891,6 +990,9 @@
 
     function removeBuurtFromCloud(featureId) {
       if (!db) return;
+      if (buurtInfoModalId === featureId) {
+        closeBuurtInfoModal();
+      }
       ensureDisplayName();
       const feature = selectedFeatures.get(featureId);
       const featureName = selectedNames.get(featureId) || '';
