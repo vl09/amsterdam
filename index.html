@@ -442,6 +442,17 @@
       }
     });
 
+    function bindBackdropClose(overlayId, closeFn) {
+      const el = document.getElementById(overlayId);
+      if (!el) return;
+      el.addEventListener('click', function(e) {
+        if (e.target === el) closeFn();
+      });
+    }
+    bindBackdropClose('name-modal', closeNameModal);
+    bindBackdropClose('vote-modal', closeVoteModal);
+    bindBackdropClose('buurt-info-modal', closeBuurtInfoModal);
+
     function ensureDisplayName() {
       if (!displayName) {
         openNameModal(true);
