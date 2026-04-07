@@ -11,7 +11,7 @@
     integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
     crossorigin=""
   />
-  <link rel="stylesheet" href="styles.css?v=5" />
+  <link rel="stylesheet" href="styles.css?v=7" />
 </head>
 <body>
   <div id="map"></div>
@@ -50,6 +50,19 @@
       <div class="modal-actions">
         <button type="button" class="secondary" id="name-cancel-btn">Cancel</button>
         <button type="button" id="name-save-btn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="vote-modal" class="modal-overlay" hidden>
+    <div class="modal-box" role="dialog" aria-labelledby="vote-modal-title">
+      <h2 id="vote-modal-title">Vote</h2>
+      <p id="vote-modal-buurt" class="vote-modal-buurt-name"></p>
+      <p class="vote-modal-hint">Your vote is stored under your display name and synced for everyone.</p>
+      <div class="vote-modal-actions">
+        <button type="button" class="vote-btn vote-up" id="vote-m-up">+1 Up</button>
+        <button type="button" class="vote-btn vote-down" id="vote-m-down">−1 Down</button>
+        <button type="button" class="secondary" id="vote-m-close">Close</button>
       </div>
     </div>
   </div>
@@ -155,6 +168,9 @@
     /** While a write is in flight, snapshots must not undo optimistic UI (commit often hangs or is slow). */
     const pendingOutgoingAdd = new Set();
     const pendingOutgoingDelete = new Set();
+    /** Net score (up − down) per buurt id from Firestore, for heatmap; buurten without docs → 0 */
+    const voteNetById = new Map();
+    let voteModalBuurtId = null;
 
     function getFeatureId(feature) {
       return (
@@ -216,38 +232,58 @@
       return -1;
     }
 
-    function baseStyle() {
-      return {
-        color: '#4b5563',
-        weight: 1,
-        opacity: 0.9,
-        fillColor: '#94a3b8',
-        fillOpacity: 0.20
-      };
+    function heatmapFillFromNet(net) {
+      const n = typeof net === 'number' ? net : 0;
+      if (n > 0) {
+        return { fillColor: '#22c55e', fillOpacity: 0.22 + Math.min(0.38, n * 0.05) };
+      }
+      if (n < 0) {
+        return { fillColor: '#dc2626', fillOpacity: 0.22 + Math.min(0.38, Math.abs(n) * 0.05) };
+      }
+      return { fillColor: '#fb923c', fillOpacity: 0.26 };
     }
 
-    function hoverStyle() {
-      return {
-        color: '#1f2937',
-        weight: 2,
-        opacity: 1,
-        fillColor: '#94a3b8',
-        fillOpacity: 0.35
-      };
+    function pathStyleForFeatureId(featureId, opts) {
+      opts = opts || {};
+      if (featureId == null || featureId === '') {
+        return Object.assign({}, heatmapFillFromNet(0), {
+          color: '#4b5563',
+          weight: 1,
+          opacity: 0.95
+        });
+      }
+      const hover = opts.hover === true;
+      const net = voteNetById.has(featureId) ? voteNetById.get(featureId) : 0;
+      const fill = heatmapFillFromNet(net);
+      const selected = selectedIds.has(featureId);
+      return Object.assign({}, fill, {
+        color: selected ? '#b91c1c' : '#4b5563',
+        weight: hover ? 2 : selected ? 3 : 1,
+        opacity: 0.95
+      });
     }
 
-    function selectedStyle() {
-      return {
-        color: '#b91c1c',
-        weight: 2,
-        opacity: 1,
-        fillColor: '#ef4444',
-        fillOpacity: 0.55
-      };
+    function paintLayerById(featureId) {
+      const layer = layerById.get(featureId);
+      if (layer) {
+        layer.setStyle(pathStyleForFeatureId(featureId, { hover: false }));
+      }
     }
 
-    function applyStyle(layer, isSelected) {
-      layer.setStyle(isSelected ? selectedStyle() : baseStyle());
+    function refreshAllHeatmapStyles() {
+      for (const fid of layerById.keys()) {
+        paintLayerById(fid);
+      }
+    }
+
+    function populateVoteNetFromDocs(docs) {
+      voteNetById.clear();
+      for (const d of docs) {
+        const id = fromFirestoreDocId(d.id);
+        const data = d.data() || {};
+        const block = parseVotePayloadFromDoc(data);
+        voteNetById.set(id, block.up - block.down);
+      }
     }
 
     function formatTime(ts) {
@@ -309,6 +345,18 @@
       if (e.key === 'Enter') saveNameFromModal();
     });
 
+    document.getElementById('vote-m-up').addEventListener('click', function() {
+      if (voteModalBuurtId != null) {
+        applyVoteToggle(voteModalBuurtId, 'up');
+      }
+    });
+    document.getElementById('vote-m-down').addEventListener('click', function() {
+      if (voteModalBuurtId != null) {
+        applyVoteToggle(voteModalBuurtId, 'down');
+      }
+    });
+    document.getElementById('vote-m-close').addEventListener('click', closeVoteModal);
+
     function ensureDisplayName() {
       if (!displayName) {
         openNameModal(true);
@@ -369,6 +417,19 @@
         nameSpan.className = 'li-name';
         nameSpan.textContent = entry.name;
         li.appendChild(nameSpan);
+
+        if (firestoreActive) {
+          const rm = document.createElement('button');
+          rm.type = 'button';
+          rm.className = 'rm-buurt';
+          rm.textContent = '\u00d7';
+          rm.title = 'Remove from list';
+          rm.addEventListener('click', function(e) {
+            e.stopPropagation();
+            removeBuurtFromCloud(entry.id);
+          });
+          li.appendChild(rm);
+        }
 
         const votesWrap = document.createElement('div');
         votesWrap.className = 'li-votes';
@@ -458,14 +519,14 @@
       selectedFeatures.set(featureId, JSON.parse(JSON.stringify(feature)));
       if (!voteCountsById.has(featureId)) voteCountsById.set(featureId, { up: 0, down: 0 });
       if (!myVoteById.has(featureId)) myVoteById.set(featureId, 0);
-      applyStyle(layer, true);
+      paintLayerById(featureId);
       return true;
     }
 
     function applyDeselectLocal(featureId) {
       const layer = layerById.get(featureId);
       if (layer) {
-        applyStyle(layer, false);
+        paintLayerById(featureId);
       }
       selectedIds.delete(featureId);
       selectedNames.delete(featureId);
@@ -599,7 +660,7 @@
           selectedNames.set(id, name);
           selectedFeatures.set(id, JSON.parse(JSON.stringify(feature)));
           const layer = layerById.get(id);
-          if (layer) applyStyle(layer, true);
+          if (layer) paintLayerById(id);
         }
       }
 
@@ -611,6 +672,7 @@
 
       updateSidebar();
       persistLocalSelection();
+      refreshAllHeatmapStyles();
     }
 
     function subscribeCollaboration() {
@@ -654,6 +716,7 @@
                 });
               }
             } else {
+              populateVoteNetFromDocs(selectionDocs);
               applySnapshotToMap(selectionDocs);
             }
           }
@@ -742,67 +805,112 @@
       ]);
     }
 
-    function toggleFirestoreSelection(featureId, featureName, feature) {
-      if (!db) {
-        return;
-      }
+    function addBuurtWithInitialUpvote(featureId, featureName, feature) {
+      if (!db) return;
       ensureDisplayName();
 
       const docId = toFirestoreDocId(featureId);
       const ref = doc(db, COLLAB_COLLECTION, docId);
       const batch = writeBatch(db);
-      const wasSelected = selectedIds.has(featureId);
-
-      if (wasSelected) {
-        batch.delete(ref);
-        writeMeta(batch, 'removed buurt');
-        pendingOutgoingDelete.add(featureId);
-        applyDeselectLocal(featureId);
-      } else {
-        const featCopy = JSON.parse(JSON.stringify(feature));
-        batch.set(ref, {
-          name: featureName,
-          featureJson: JSON.stringify(featCopy),
-          upvotes: 0,
-          downvotes: 0,
-          voters: {},
-          updatedBy: displayName || 'Anonymous',
-          updatedAt: serverTimestamp()
-        });
-        writeMeta(batch, 'added buurt');
-        pendingOutgoingAdd.add(featureId);
-        applySelectLocal(featureId, featureName, feature);
-      }
+      const vkey = voterMapKey(displayName);
+      const voters = {};
+      voters[vkey] = 1;
+      const featCopy = JSON.parse(JSON.stringify(feature));
+      batch.set(ref, {
+        name: featureName,
+        featureJson: JSON.stringify(featCopy),
+        upvotes: 1,
+        downvotes: 0,
+        voters: voters,
+        updatedBy: displayName || 'Anonymous',
+        updatedAt: serverTimestamp()
+      });
+      writeMeta(batch, 'added buurt + upvote');
+      pendingOutgoingAdd.add(featureId);
+      applySelectLocal(featureId, featureName, feature);
+      voteCountsById.set(featureId, { up: 1, down: 0 });
+      myVoteById.set(featureId, 1);
+      voteNetById.set(featureId, 1);
       persistLocalSelection();
       updateSidebar();
+      refreshAllHeatmapStyles();
 
       function clearPending() {
         pendingOutgoingAdd.delete(featureId);
-        pendingOutgoingDelete.delete(featureId);
       }
 
       function revertOptimistic() {
-        if (wasSelected) {
-          applySelectLocal(featureId, featureName, feature);
-        } else {
-          applyDeselectLocal(featureId);
-        }
+        applyDeselectLocal(featureId);
+        voteNetById.delete(featureId);
         persistLocalSelection();
         updateSidebar();
+        refreshAllHeatmapStyles();
       }
 
       commitWithTimeout(batch.commit(), 30000)
         .then(function() {
-          console.log('[buurten] Firestore commit OK', { docId, action: wasSelected ? 'removed' : 'added' });
           clearPending();
         })
         .catch(function(e) {
-          console.error('[buurten] Firestore commit failed or timed out', e);
+          console.error(e);
           clearPending();
           revertOptimistic();
           setSyncLine('Save failed — ' + (e && e.message ? e.message : e && e.code ? e.code : 'error'));
           alert('Could not save to the cloud.\n\n' + firestoreErrorMessage(e));
         });
+    }
+
+    function removeBuurtFromCloud(featureId) {
+      if (!db) return;
+      ensureDisplayName();
+      const feature = selectedFeatures.get(featureId);
+      const featureName = selectedNames.get(featureId) || '';
+      if (!feature) return;
+
+      const docId = toFirestoreDocId(featureId);
+      const ref = doc(db, COLLAB_COLLECTION, docId);
+      const batch = writeBatch(db);
+      batch.delete(ref);
+      writeMeta(batch, 'removed buurt');
+      pendingOutgoingDelete.add(featureId);
+      applyDeselectLocal(featureId);
+      persistLocalSelection();
+      updateSidebar();
+      refreshAllHeatmapStyles();
+
+      function clearPending() {
+        pendingOutgoingDelete.delete(featureId);
+      }
+
+      function revertOptimistic() {
+        applySelectLocal(featureId, featureName, feature);
+        persistLocalSelection();
+        updateSidebar();
+        refreshAllHeatmapStyles();
+      }
+
+      commitWithTimeout(batch.commit(), 30000)
+        .then(function() {
+          clearPending();
+        })
+        .catch(function(e) {
+          console.error(e);
+          clearPending();
+          revertOptimistic();
+          setSyncLine('Save failed — ' + (e && e.message ? e.message : e && e.code ? e.code : 'error'));
+          alert('Could not save to the cloud.\n\n' + firestoreErrorMessage(e));
+        });
+    }
+
+    function openVoteModal(featureId, featureName) {
+      voteModalBuurtId = featureId;
+      document.getElementById('vote-modal-buurt').textContent = featureName;
+      document.getElementById('vote-modal').hidden = false;
+    }
+
+    function closeVoteModal() {
+      voteModalBuurtId = null;
+      document.getElementById('vote-modal').hidden = true;
     }
 
     function applyVoteToggle(featureId, direction) {
@@ -847,6 +955,11 @@
           writeMeta(batch, direction === 'up' ? 'vote up' : 'vote down');
           return batch.commit();
         })
+        .then(function() {
+          if (voteModalBuurtId === featureId) {
+            closeVoteModal();
+          }
+        })
         .catch(function(e) {
           console.error(e);
           alert('Vote failed.\n\n' + firestoreErrorMessage(e));
@@ -873,6 +986,50 @@
           console.error(e);
           alert('Clear failed partway.');
         });
+    }
+
+    function importUpsertUpvoteOp(op) {
+      const docId = toFirestoreDocId(op.featureId);
+      const ref = doc(db, COLLAB_COLLECTION, docId);
+      const vkey = voterMapKey(displayName);
+      const self = displayName || 'Anonymous';
+      const featJson = JSON.stringify(JSON.parse(JSON.stringify(op.feature)));
+
+      return runTransaction(db, function(transaction) {
+        return transaction.get(ref).then(function(snap) {
+          if (!snap.exists) {
+            const voters = {};
+            voters[vkey] = 1;
+            const tallies = talliesFromVoters(voters);
+            transaction.set(ref, {
+              name: op.featureName,
+              featureJson: featJson,
+              voters: voters,
+              upvotes: tallies.up,
+              downvotes: tallies.down,
+              updatedBy: self,
+              updatedAt: serverTimestamp()
+            });
+            return;
+          }
+          const data = snap.data() || {};
+          const voters = normalizeVotersObject(data.voters);
+          const nextVoters = Object.assign({}, voters);
+          nextVoters[vkey] = 1;
+          const tallies = talliesFromVoters(nextVoters);
+          transaction.set(
+            ref,
+            {
+              voters: nextVoters,
+              upvotes: tallies.up,
+              downvotes: tallies.down,
+              updatedBy: self,
+              updatedAt: serverTimestamp()
+            },
+            { merge: true }
+          );
+        });
+      });
     }
 
     function clearAllSelections() {
@@ -924,42 +1081,26 @@
               return;
             }
 
-            const who = displayName || 'Anonymous';
-            const ts = serverTimestamp();
-
-            function commitChunk(start) {
-              const batch = writeBatch(db);
-              const end = Math.min(start + 400, ops.length);
-              for (let i = start; i < end; i += 1) {
-                const op = ops[i];
-                const docId = toFirestoreDocId(op.featureId);
-                const ref = doc(db, COLLAB_COLLECTION, docId);
-                const featCopy = JSON.parse(JSON.stringify(op.feature));
-                batch.set(ref, {
-                  name: op.featureName,
-                  featureJson: JSON.stringify(featCopy),
-                  upvotes: 0,
-                  downvotes: 0,
-                  voters: {},
-                  updatedBy: who,
-                  updatedAt: ts
-                });
+            setSyncLine('Importing to cloud (upvotes)…');
+            void (async function() {
+              try {
+                for (const op of ops) {
+                  await importUpsertUpvoteOp(op);
+                  applySelectLocal(op.featureId, op.featureName, op.feature);
+                }
+                const batch = writeBatch(db);
+                writeMeta(batch, 'import GeoJSON');
+                await batch.commit();
+                persistLocalSelection();
+                updateSidebar();
+                refreshAllHeatmapStyles();
+                setSyncLine('Import complete — live sync');
+              } catch (e) {
+                console.error(e);
+                alert('Import to cloud failed.\n\n' + firestoreErrorMessage(e));
+                setSyncLine('Import failed — see alert');
               }
-              writeMeta(batch, 'import GeoJSON');
-              batch
-                .commit()
-                .then(function() {
-                  if (end < ops.length) {
-                    commitChunk(end);
-                  }
-                })
-                .catch(function(e) {
-                  console.error(e);
-                  alert('Import to cloud failed.\n\n' + firestoreErrorMessage(e));
-                });
-            }
-
-            commitChunk(0);
+            })();
             return;
           }
 
@@ -1039,7 +1180,10 @@
       })
       .then(function(data) {
         const buurtenLayer = L.geoJSON(data, {
-          style: baseStyle,
+          style: function(feature) {
+            const fid = getFeatureId(feature);
+            return pathStyleForFeatureId(fid, {});
+          },
           onEachFeature: function(feature, layer) {
             const featureId = getFeatureId(feature);
             const featureName = getFeatureName(feature);
@@ -1057,18 +1201,20 @@
             });
 
             layer.on('mouseover', function() {
-              if (!selectedIds.has(featureId)) {
-                layer.setStyle(hoverStyle());
-              }
+              layer.setStyle(pathStyleForFeatureId(featureId, { hover: true }));
             });
 
             layer.on('mouseout', function() {
-              applyStyle(layer, selectedIds.has(featureId));
+              paintLayerById(featureId);
             });
 
             layer.on('click', function() {
               if (firestoreActive) {
-                toggleFirestoreSelection(featureId, featureName, feature);
+                if (selectedIds.has(featureId)) {
+                  openVoteModal(featureId, featureName);
+                } else {
+                  addBuurtWithInitialUpvote(featureId, featureName, feature);
+                }
               } else {
                 if (selectedIds.has(featureId)) {
                   applyDeselectLocal(featureId);
@@ -1084,6 +1230,7 @@
 
         map.fitBounds(buurtenLayer.getBounds());
         layersReady = true;
+        refreshAllHeatmapStyles();
 
         updateDisplayNameUI();
 
@@ -1135,3 +1282,4 @@
 </body>
 <!-- Do not paste another full page below this point. -->
 </html>
+
