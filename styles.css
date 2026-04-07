@@ -382,7 +382,7 @@ button.btn-info-buurt:hover {
     left: auto;
     right: auto;
     top: auto;
-    flex: 0 0 33.333vh;
+    flex: 0 0 50vh;
     min-height: 0;
     width: 100%;
     max-width: none;
@@ -466,7 +466,8 @@ button.btn-info-buurt:hover {
 
   @supports (height: 100dvh) {
     .info-box {
-      flex-basis: 33.333dvh;
+      flex-basis: 50dvh;
     }
   }
 }
+
